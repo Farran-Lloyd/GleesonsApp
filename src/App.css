@@ -1,0 +1,32 @@
+/* Print-friendly receipt styles */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+
+  body {
+    background: #fff;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* 80mm roll width (adjust if your printer differs) */
+  .receipt-container {
+    width: 80mm;
+    margin: 0 auto;
+    padding: 0;
+    font-size: 12px;
+    line-height: 1.25;
+  }
+
+  /* Remove page margins some browsers add */
+  @page {
+    margin: 6mm;
+  }
+
+  /* Optional: tighten spacing for thermal format */
+  .receipt-container h3 {
+    margin: 0 0 4px;
+    font-size: 16px;
+  }
+}
