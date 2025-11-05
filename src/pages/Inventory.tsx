@@ -8,109 +8,49 @@ import {
   Form,
   Button,
   InputGroup,
-  ButtonGroup,
 } from "react-bootstrap";
 import Navbar from "../components/Navbar";
-import { supabase } from "../lib/supabase";
 import { useProducts } from "../hooks/useProducts";
 import { formatCurrency } from "../utilities/formatCurrency";
+import { useOrder } from "../context/OrderContext";
 import { useLocation } from "react-router-dom";
-
-type OrderRow = {
-  id: string;
-  is_complete: boolean;
-  items: { id: number; quantity: number }[];
-  created_at: string;
-};
 
 export default function Inventory() {
   const location = useLocation();
-
-  // Load all products (for names/prices)
   const { products, byId, loading: loadingProducts, errorMsg: productsError } = useProducts();
+  const { orders, refreshOrders } = useOrder();
 
-  // Orders state
-  const [orders, setOrders] = useState<OrderRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  // UI filters
   const [includeCompleted, setIncludeCompleted] = useState(false);
-  const [q, setQ] = useState(""); // search products by name/id
+  const [q, setQ] = useState("");
 
-  async function fetchOrders() {
-    setLoading(true);
-    setErrorMsg(null);
-
-    // We only need a few columns
-    const { data, error } = await supabase
-      .from("orders")
-      .select("id, is_complete, items, created_at")
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      setErrorMsg("Failed to load orders.");
-    } else {
-      // normalize items
-      const rows = (data ?? []).map((r) => ({
-        ...r,
-        items: Array.isArray(r.items) ? r.items : [],
-      })) as OrderRow[];
-      setOrders(rows);
-    }
-    setLoading(false);
-  }
-
-  // Initial load + refetch on route re-enter
+  // Load orders from Supabase via context
   useEffect(() => {
-    fetchOrders();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    (async () => {
+      try {
+        setLoading(true);
+        await refreshOrders();
+      } catch {
+        setErrorMsg("Failed to load orders.");
+      } finally {
+        setLoading(false);
+      }
+    })();
   }, [location.key]);
-
-  // Realtime: listen for INSERT/UPDATE/DELETE on orders to keep inventory in sync
-  useEffect(() => {
-    const channel = supabase
-      .channel("orders-inventory-rt")
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "orders" },
-        (payload) => setOrders((prev) => [payload.new as any as OrderRow, ...prev])
-      )
-      .on(
-        "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "orders" },
-        (payload) =>
-          setOrders((prev) =>
-            prev.map((o) => (o.id === (payload.new as any).id ? (payload.new as any as OrderRow) : o))
-          )
-      )
-      .on(
-        "postgres_changes",
-        { event: "DELETE", schema: "public", table: "orders" },
-        (payload) => setOrders((prev) => prev.filter((o) => o.id !== (payload.old as any).id))
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, []);
 
   // Compute required quantities
   const requirements = useMemo(() => {
-    // pick orders subset
     const relevant = includeCompleted ? orders : orders.filter((o) => !o.is_complete);
-
-    // aggregate into productId -> qty
     const map = new Map<number, number>();
+
     for (const o of relevant) {
-      for (const line of o.items) {
+      for (const line of o.items || []) {
         if (!line || typeof line.id !== "number" || typeof line.quantity !== "number") continue;
         map.set(line.id, (map.get(line.id) || 0) + Math.max(0, line.quantity));
       }
     }
 
-    // convert to array with product info
     const rows = Array.from(map.entries()).map(([productId, qty]) => {
       const p = byId.get(productId);
       return {
@@ -123,7 +63,7 @@ export default function Inventory() {
       };
     });
 
-    // sort: active first, then name
+    // sort active first, then alphabetically
     rows.sort((a, b) => {
       if (a.active !== b.active) return a.active ? -1 : 1;
       return a.name.localeCompare(b.name);
@@ -132,16 +72,15 @@ export default function Inventory() {
     return rows;
   }, [orders, byId, includeCompleted]);
 
-  // Search filter (by name or id)
+  // Filter by search query
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (!needle) return requirements;
-    return requirements.filter((r) => {
-      return (
+    return requirements.filter(
+      (r) =>
         r.name.toLowerCase().includes(needle) ||
         String(r.productId).includes(needle)
-      );
-    });
+    );
   }, [q, requirements]);
 
   const totalLines = filtered.length;
@@ -174,7 +113,7 @@ export default function Inventory() {
               onChange={(e) => setIncludeCompleted(e.currentTarget.checked)}
             />
 
-            <Button variant="outline-secondary" onClick={fetchOrders}>
+            <Button variant="outline-secondary" onClick={() => refreshOrders()}>
               Refresh
             </Button>
           </div>
@@ -222,7 +161,10 @@ export default function Inventory() {
               </thead>
               <tbody>
                 {filtered.map((r) => (
-                  <tr key={r.productId} className={!r.active ? "table-warning" : undefined}>
+                  <tr
+                    key={r.productId}
+                    className={!r.active ? "table-warning" : undefined}
+                  >
                     <td>{r.productId}</td>
                     <td>{r.name}</td>
                     <td style={{ textAlign: "right" }}>
@@ -239,9 +181,15 @@ export default function Inventory() {
 
             <div className="d-flex justify-content-end">
               <div className="text-end">
-                <div>Lines: <strong>{totalLines}</strong></div>
-                <div>Required Qty: <strong>{grandQty}</strong></div>
-                <div>Value: <strong>{formatCurrency(grandTotal)}</strong></div>
+                <div>
+                  Lines: <strong>{totalLines}</strong>
+                </div>
+                <div>
+                  Required Qty: <strong>{grandQty}</strong>
+                </div>
+                <div>
+                  Value: <strong>{formatCurrency(grandTotal)}</strong>
+                </div>
               </div>
             </div>
           </>

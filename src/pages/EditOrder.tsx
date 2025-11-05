@@ -232,10 +232,13 @@ export default function EditOrderPage() {
         <div className="d-flex justify-content-between align-items-center mb-3">
           <h2 className="mb-0">Edit Order</h2>
           {order?.order_code && (
-  <span className="badge bg-secondary ms-2" style={{ alignSelf: "center" }}>
-    {order.order_code}
-  </span>
-)}
+            <span
+              className="badge bg-secondary ms-2"
+              style={{ alignSelf: "center" }}
+            >
+              {order.order_code}
+            </span>
+          )}
           <div className="d-flex gap-2">
             <Button
               onClick={handleDelete}

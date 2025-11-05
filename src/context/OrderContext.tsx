@@ -1,7 +1,6 @@
 // src/context/OrderContext.tsx
 import { useState, useContext, createContext, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { useLocalStorage } from "../hooks/useLocalStorage";
 import { ShoppingCart } from "../components/ShoppingCart";
 import { supabase } from "../lib/supabase";
 
@@ -16,15 +15,17 @@ export type CustomerInfo = {
 };
 
 export type CompletedOrder = {
-  id: string; // local shadow id (timestamp-based)
-  createdAt: string;
-  customer: CustomerInfo;
+  id: string;
+  created_at: string;
+  customer_name: string;
+  customer_email: string | null;
+  customer_phone: string;
+  staff_name: string;
+  deposit_paid: number;
   items: OrderItem[];
-  totals: {
-    subtotal: number;
-    deposit: number;
-    balance: number;
-  };
+  subtotal: number;
+  balance: number;
+  is_complete: boolean;
   notes?: string | null;
 };
 
@@ -37,33 +38,22 @@ type OrderListContext = {
   increaseOrderQuantity: (id: number) => void;
   decreseOrderQuantity: (id: number) => void;
   removeFromOrder: (id: number) => void;
-
   navigateToOrderDetails: () => void;
-
-  orders: CompletedOrder[]; // local history (optional/offline)
-  submitOrder: (
-    customer: CustomerInfo,
-    subtotal: number,
-    notes: string
-  ) => Promise<void>;
+  submitOrder: (customer: CustomerInfo, subtotal: number, notes?: string) => Promise<void>;
+  orders: CompletedOrder[];
+  refreshOrders: () => Promise<void>;
 };
 
 const OrderContext = createContext({} as OrderListContext);
-
-export function useOrder() {
-  return useContext(OrderContext);
-}
+export function useOrder() { return useContext(OrderContext); }
 
 export function OrderList({ children }: { children: ReactNode }) {
   const [isOpen, setIsOpen] = useState(false);
-  const [orderItems, setOrderItems] = useLocalStorage<OrderItem[]>(
-    "shopping-cart",
-    []
-  );
-  const [orders, setOrders] = useLocalStorage<CompletedOrder[]>("orders", []);
+  const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
+  const [orders, setOrders] = useState<CompletedOrder[]>([]);
   const navigate = useNavigate();
 
-  const cartQuantity = orderItems.reduce((q, i) => q + i.quantity, 0);
+  const cartQuantity = orderItems.reduce((sum, i) => sum + i.quantity, 0);
 
   const openCart = () => setIsOpen(true);
   const closeCart = () => setIsOpen(false);
@@ -74,18 +64,16 @@ export function OrderList({ children }: { children: ReactNode }) {
 
   function increaseOrderQuantity(id: number) {
     setOrderItems((curr) =>
-      curr.find((i) => i.id === id) == null
-        ? [...curr, { id, quantity: 1 }]
-        : curr.map((i) =>
-            i.id === id ? { ...i, quantity: i.quantity + 1 } : i
-          )
+      curr.find((i) => i.id === id)
+        ? curr.map((i) => i.id === id ? { ...i, quantity: i.quantity + 1 } : i)
+        : [...curr, { id, quantity: 1 }]
     );
   }
 
   function decreseOrderQuantity(id: number) {
     setOrderItems((curr) =>
       curr
-        .map((i) => (i.id === id ? { ...i, quantity: i.quantity - 1 } : i))
+        .map((i) => i.id === id ? { ...i, quantity: i.quantity - 1 } : i)
         .filter((i) => i.quantity > 0)
     );
   }
@@ -94,107 +82,53 @@ export function OrderList({ children }: { children: ReactNode }) {
     setOrderItems((curr) => curr.filter((i) => i.id !== id));
   }
 
+  async function refreshOrders() {
+    const { data, error } = await supabase
+      .from("orders")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (!error && data) setOrders(data as CompletedOrder[]);
+  }
+
+  async function submitOrder(customer: CustomerInfo, subtotal: number, notes?: string) {
+    const deposit = Math.max(0, customer.depositPaid || 0);
+    const balance = Math.max(0, subtotal - deposit);
+
+    const { data, error } = await supabase
+      .from("orders")
+      .insert({
+        customer_name: customer.name,
+        customer_email: customer.email ?? null,
+        customer_phone: customer.phone,
+        staff_name: customer.staffName,
+        deposit_paid: deposit,
+        items: orderItems,
+        subtotal,
+        balance,
+        is_complete: false,
+        notes: notes?.trim() || null,
+      })
+      .select("id")
+      .single();
+
+    if (error || !data) {
+      console.error("Supabase insert failed:", error);
+      alert("Could not save order.");
+      return;
+    }
+
+    setOrderItems([]);
+    closeCart();
+    await refreshOrders(); // ✅ Refresh from Supabase immediately
+    navigate(`/receipt/${data.id}`);
+  }
+
   function navigateToOrderDetails() {
     if (orderItems.length === 0) {
       alert("Your cart is empty!");
       return;
     }
     navigate("/order-details");
-  }
-
-  // --- Unique human-friendly order code, e.g. GB-Q3KF-1Z8C2L ---
-  function generateOrderCode() {
-    const t = Date.now().toString(36).toUpperCase().slice(-4);
-    const arr = new Uint32Array(2);
-    if (typeof crypto !== "undefined" && crypto.getRandomValues) {
-      crypto.getRandomValues(arr);
-    } else {
-      arr[0] = Math.floor(Math.random() * 2 ** 32);
-      arr[1] = Math.floor(Math.random() * 2 ** 32);
-    }
-    const r = (arr[0] ^ arr[1])
-      .toString(36)
-      .toUpperCase()
-      .padStart(6, "0")
-      .slice(0, 6);
-    return `GB-${t}-${r}`;
-  }
-
-  // --- Create order in Supabase, then go to receipt (auto-print) ---
-  async function submitOrder(
-    customer: CustomerInfo,
-    subtotal: number,
-    notes: string
-  ) {
-    const deposit = Math.max(0, customer.depositPaid || 0);
-    const balance = Math.max(0, subtotal - deposit);
-
-    const { data: userData } = await supabase.auth.getUser();
-    const userId = userData.user?.id;
-    if (!userId) {
-      alert("You must be logged in to place orders.");
-      return;
-    }
-
-    // Keep a local shadow copy for offline/instant UI
-    const localOrder: CompletedOrder = {
-      id: String(Date.now()),
-      createdAt: new Date().toISOString(),
-      customer,
-      items: orderItems,
-      totals: { subtotal, deposit, balance },
-      notes: notes?.trim() || undefined,
-    };
-    setOrders((prev) => [localOrder, ...prev]);
-
-    // Insert with unique order_code (retry on rare collision)
-    let inserted: { id: string; order_code: string } | null = null;
-    let lastErr: any = null;
-
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const orderCode = generateOrderCode();
-
-      const { data, error } = await supabase
-        .from("orders")
-        .insert({
-          user_id: userId,
-          order_code: orderCode,
-          customer_name: customer.name,
-          customer_email: customer.email ?? null,
-          customer_phone: customer.phone,
-          staff_name: customer.staffName,
-          deposit_paid: deposit,
-          items: orderItems, // jsonb
-          subtotal,
-          balance,
-          is_complete: false,
-          notes: notes?.trim() || null,
-        })
-        .select("id, order_code")
-        .single();
-
-      if (!error && data) {
-        inserted = data;
-        break;
-      }
-
-      // 23505 = unique violation (order_code collision) — retry with a new code
-      if (error?.code !== "23505") {
-        lastErr = error;
-        break;
-      }
-    }
-
-    if (!inserted) {
-      console.error("Order insert failed:", lastErr);
-      alert("Could not save order. Please try again.");
-      return;
-    }
-
-    // Clear cart and navigate to receipt; pass autoPrint=true in state
-    setOrderItems([]);
-    closeCart();
-    navigate(`/receipt/${inserted.id}`, { state: { autoPrint: true } });
   }
 
   return (
@@ -209,8 +143,9 @@ export function OrderList({ children }: { children: ReactNode }) {
         orderItems,
         cartQuantity,
         navigateToOrderDetails,
-        orders,
         submitOrder,
+        orders,
+        refreshOrders,
       }}
     >
       {children}
