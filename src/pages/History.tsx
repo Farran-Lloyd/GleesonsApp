@@ -23,11 +23,17 @@ export default function OrderHistory() {
   const [q, setQ] = useState("");
   const [showCompleted, setShowCompleted] = useState(false);
 
+  // fallback map for legacy display (only for names)
+  const legacyMap = useMemo(() => {
+    const m = new Map<number, string>();
+    (storeItems as any[]).forEach((it: any) => {
+      if (typeof it?.id === "number") m.set(it.id, it.name);
+    });
+    return m;
+  }, []);
+
   useEffect(() => {
-    // initial fetch on first mount in case context mounted before auth finished
-    if (!orders.length) {
-      refreshOrders();
-    }
+    if (!orders.length) refreshOrders();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -52,24 +58,11 @@ export default function OrderHistory() {
   }, [orders, q, showCompleted]);
 
   const toggleComplete = async (id: string, makeComplete: boolean) => {
-    // optimistic
-    // (Optional) we could also rely purely on realtime: comment out setImmediate
     const { error } = await supabase
       .from("orders")
       .update({ is_complete: makeComplete })
       .eq("id", id);
     if (error) alert("Failed to update order status.");
-    // Realtime will update the row in context automatically
-  };
-
-  const handleDelete = async (id: string) => {
-    const ok = confirm("Delete this order? This cannot be undone.");
-    if (!ok) return;
-    const { error } = await supabase.from("orders").delete().eq("id", id);
-    if (error) {
-      alert("Failed to delete order.");
-    }
-    // Realtime DELETE will remove it from the list
   };
 
   const handlePrint = (id: string) => {
@@ -107,9 +100,7 @@ export default function OrderHistory() {
           </div>
         )}
         {ordersError && <Alert variant="danger">{ordersError}</Alert>}
-        {!ordersLoading && !ordersError && filtered.length === 0 && (
-          <p>No matching orders.</p>
-        )}
+        {!ordersLoading && !ordersError && filtered.length === 0 && <p>No matching orders.</p>}
 
         {!ordersLoading &&
           !ordersError &&
@@ -120,9 +111,7 @@ export default function OrderHistory() {
                   <div>
                     <div className="fw-bold">
                       {o.customer_name}{" "}
-                      {o.is_complete && (
-                        <span className="badge bg-success ms-2">Complete</span>
-                      )}
+                      {o.is_complete && <span className="badge bg-success ms-2">Complete</span>}
                     </div>
                     <div className="text-muted" style={{ fontSize: ".9rem" }}>
                       {new Date(o.created_at).toLocaleString()}
@@ -135,10 +124,7 @@ export default function OrderHistory() {
                       {o.customer_email ? ` • Email: ${o.customer_email}` : ""}
                     </div>
                     {o.notes && (
-                      <div
-                        className="text-muted mt-1"
-                        style={{ fontSize: ".9rem" }}
-                      >
+                      <div className="text-muted mt-1" style={{ fontSize: ".9rem" }}>
                         <i>Note:</i> {o.notes}
                       </div>
                     )}
@@ -146,22 +132,17 @@ export default function OrderHistory() {
                   <div className="text-end">
                     <div>Subtotal: {formatCurrency(o.subtotal)}</div>
                     <div>Deposit: {formatCurrency(o.deposit_paid)}</div>
-                    <div className="fw-bold">
-                      Balance: {formatCurrency(o.balance)}
-                    </div>
+                    <div className="fw-bold">Balance: {formatCurrency(o.balance)}</div>
                   </div>
                 </div>
 
                 <hr />
 
                 {o.items.map((it) => {
-                  const item = storeItems.find((i) => i.id === it.id);
+                  const fallbackName = legacyMap.get(it.id);
                   return (
-                    <div
-                      key={`${o.id}-${it.id}`}
-                      className="d-flex justify-content-between"
-                    >
-                      <span>{item ? item.name : `Item #${it.id}`}</span>
+                    <div key={`${o.id}-${it.id}`} className="d-flex justify-content-between">
+                      <span>{fallbackName ? fallbackName : `Item #${it.id}`}</span>
                       <span>Qty: {it.quantity}</span>
                     </div>
                   );
@@ -193,13 +174,7 @@ export default function OrderHistory() {
                     Print
                   </Button>
 
-                  <Button
-                    variant="outline-danger"
-                    size="sm"
-                    onClick={() => handleDelete(o.id)}
-                  >
-                    Delete
-                  </Button>
+                  {/* ⬇️ Delete removed here by request */}
                 </div>
               </Card.Body>
             </Card>

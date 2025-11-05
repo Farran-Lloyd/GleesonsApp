@@ -1,24 +1,29 @@
+// src/pages/EditOrder.tsx
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import {
-  Container,
-  Row,
-  Col,
-  Card,
-  Form,
-  Button,
   Alert,
-  Spinner,
+  Button,
+  Card,
+  Col,
+  Container,
+  Form,
   InputGroup,
+  Row,
+  Spinner,
+  Table,
 } from "react-bootstrap";
 import Navbar from "../components/Navbar";
 import { supabase } from "../lib/supabase";
 import { useProducts } from "../hooks/useProducts";
 import { formatCurrency } from "../utilities/formatCurrency";
 
+// ⬇️ Legacy fallback for items not present in Supabase products
+import legacyItems from "../data/items.json";
+
+// Types that match your orders table
 type OrderRow = {
   id: string;
-  order_code: string | null;
   created_at: string;
   customer_name: string;
   customer_email: string | null;
@@ -29,42 +34,43 @@ type OrderRow = {
   subtotal: number;
   balance: number;
   is_complete: boolean;
-  notes: string | null; // NEW
+  notes?: string | null;
+  order_code?: string | null;
 };
 
-export default function EditOrderPage() {
-  const { id } = useParams<{ id: string }>();
+type EditableLine = { id: number; quantity: number };
+
+export default function EditOrder() {
   const navigate = useNavigate();
+  const { id } = useParams<{ id: string }>();
 
-  // Products for names/prices and adding lines
-  const { products, byId } = useProducts();
+  // Products from Supabase
+  const { products, byId, loading: loadingProducts, errorMsg: productsError } = useProducts();
 
+  // Order state
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [deleting, setDeleting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
   const [order, setOrder] = useState<OrderRow | null>(null);
 
-  // Form state
+  // Editable fields
+  const [lines, setLines] = useState<EditableLine[]>([]);
+  const [staffName, setStaffName] = useState("");
   const [customerName, setCustomerName] = useState("");
   const [customerEmail, setCustomerEmail] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
-  const [staffName, setStaffName] = useState("");
-  const [depositPaid, setDepositPaid] = useState<number>(0);
-  const [notes, setNotes] = useState(""); // NEW
-  const [items, setItems] = useState<{ id: number; quantity: number }[]>([]);
+  const [depositPaid, setDepositPaid] = useState<string>("0");
+  const [notes, setNotes] = useState<string>("");
 
-  // "Add item" controls
+  // Add-item controls
   const [addProductId, setAddProductId] = useState<number | "">("");
   const [addQty, setAddQty] = useState<number>(1);
 
+  // Load order
   useEffect(() => {
     let mounted = true;
     (async () => {
       setLoading(true);
       setErrorMsg(null);
-
       const { data, error } = await supabase
         .from("orders")
         .select("*")
@@ -74,67 +80,75 @@ export default function EditOrderPage() {
       if (!mounted) return;
 
       if (error || !data) {
-        console.error(error);
-        setErrorMsg("Could not load order.");
+        setErrorMsg("Failed to load order.");
+        setOrder(null);
       } else {
-        const row = data as OrderRow;
+        const row = {
+          ...data,
+          items: Array.isArray(data.items) ? data.items : [],
+        } as OrderRow;
+
         setOrder(row);
-        setCustomerName(row.customer_name);
-        setCustomerEmail(row.customer_email ?? "");
-        setCustomerPhone(row.customer_phone);
-        setStaffName(row.staff_name);
-        setDepositPaid(Number(row.deposit_paid) || 0);
-        setNotes(row.notes ?? ""); // hydrate notes
-        setItems(Array.isArray(row.items) ? row.items : []);
+        setLines(row.items.map((x) => ({ id: x.id, quantity: x.quantity })));
+        setStaffName(row.staff_name || "");
+        setCustomerName(row.customer_name || "");
+        setCustomerEmail(row.customer_email || "");
+        setCustomerPhone(row.customer_phone || "");
+        setDepositPaid(String(row.deposit_paid ?? 0));
+        setNotes(row.notes ?? "");
       }
       setLoading(false);
     })();
-
     return () => {
       mounted = false;
     };
   }, [id]);
 
-  // Compute subtotal from current items using live product prices
-  const subtotal = useMemo(() => {
-    return items.reduce((sum, line) => {
-      const p = byId.get(line.id);
-      const price = p?.price ?? 0;
-      return sum + price * line.quantity;
-    }, 0);
-  }, [items, byId]);
-
-  const balance = Math.max(0, subtotal - (Number(depositPaid) || 0));
-
-  // ----- item ops -----
-  const updateQty = (productId: number, qty: number) => {
-    if (Number.isNaN(qty)) return;
-    if (qty <= 0) {
-      setItems((prev) => prev.filter((l) => l.id !== productId));
-      return;
-    }
-    setItems((prev) => {
-      const exists = prev.find((l) => l.id === productId);
-      if (!exists) return [...prev, { id: productId, quantity: qty }];
-      return prev.map((l) =>
-        l.id === productId ? { ...l, quantity: qty } : l
-      );
+  // Lookup name/price with Supabase → fallback to legacy JSON
+  const legacyById = useMemo(() => {
+    const m = new Map<number, { name: string; price: number }>();
+    (legacyItems as any[]).forEach((it: any) => {
+      if (typeof it?.id === "number") m.set(it.id, { name: it.name, price: it.price });
     });
-  };
+    return m;
+  }, []);
 
-  const removeLine = (productId: number) => {
-    setItems((prev) => prev.filter((l) => l.id !== productId));
-  };
+  function getName(id: number) {
+    return byId.get(id)?.name ?? legacyById.get(id)?.name ?? `Item #${id}`;
+  }
+  function getPrice(id: number) {
+    return byId.get(id)?.price ?? legacyById.get(id)?.price ?? 0;
+  }
+
+  // Derived totals
+  const subtotal = useMemo(
+    () => lines.reduce((sum, l) => sum + getPrice(l.id) * Math.max(0, l.quantity), 0),
+    [lines, byId, legacyById]
+  );
+  const deposit = useMemo(() => Math.max(0, Number(depositPaid) || 0), [depositPaid]);
+  const balance = useMemo(() => Math.max(0, subtotal - deposit), [subtotal, deposit]);
+
+  // Mutations on lines
+  const inc = (pid: number) =>
+    setLines((prev) =>
+      prev.map((l) => (l.id === pid ? { ...l, quantity: l.quantity + 1 } : l))
+    );
+  const dec = (pid: number) =>
+    setLines((prev) =>
+      prev
+        .map((l) => (l.id === pid ? { ...l, quantity: l.quantity - 1 } : l))
+        .filter((l) => l.quantity > 0)
+    );
+  const remove = (pid: number) => setLines((prev) => prev.filter((l) => l.id !== pid));
 
   const addLine = () => {
-    if (addProductId === "" || addQty <= 0) return;
     const pid = Number(addProductId);
-    setItems((prev) => {
-      const exists = prev.find((l) => l.id === pid);
-      if (exists) {
-        return prev.map((l) =>
-          l.id === pid ? { ...l, quantity: l.quantity + addQty } : l
-        );
+    if (!pid || isNaN(pid)) return;
+    if (addQty <= 0) return;
+    setLines((prev) => {
+      const existing = prev.find((l) => l.id === pid);
+      if (existing) {
+        return prev.map((l) => (l.id === pid ? { ...l, quantity: l.quantity + addQty } : l));
       }
       return [...prev, { id: pid, quantity: addQty }];
     });
@@ -142,88 +156,43 @@ export default function EditOrderPage() {
     setAddQty(1);
   };
 
-  // ----- save & delete -----
+  // Save
   const handleSave = async () => {
-    if (!customerName || !customerPhone || !staffName) {
-      alert("Please provide customer name, phone, and staff name.");
-      return;
-    }
-    if (items.length === 0) {
-      const yes = confirm("This order has no items. Continue?");
-      if (!yes) return;
-    }
-
-    setSaving(true);
-    const payload = {
-      customer_name: customerName.trim(),
-      customer_email: customerEmail.trim() || null,
-      customer_phone: customerPhone.trim(),
-      staff_name: staffName.trim(),
-      deposit_paid: Math.max(0, Number(depositPaid) || 0),
-      items,
-      subtotal,
-      balance,
-      notes: notes.trim() || null, // include notes
-    };
-
+    if (!order) return;
     const { error } = await supabase
       .from("orders")
-      .update(payload)
-      .eq("id", id);
-    setSaving(false);
+      .update({
+        staff_name: staffName.trim(),
+        customer_name: customerName.trim(),
+        customer_email: customerEmail.trim() || null,
+        customer_phone: customerPhone.trim(),
+        deposit_paid: deposit,
+        items: lines,
+        subtotal,
+        balance,
+        notes: notes.trim() || null,
+      })
+      .eq("id", order.id);
 
     if (error) {
-      console.error(error);
-      alert("Failed to save changes.");
+      alert("Failed to save order.");
       return;
     }
     navigate("/history");
   };
 
+  // Delete (kept here; removed from History as requested)
   const handleDelete = async () => {
-    const yes = confirm("Delete this order? This cannot be undone.");
-    if (!yes) return;
-
-    setDeleting(true);
-    const { data, error } = await supabase
-      .from("orders")
-      .delete()
-      .eq("id", id)
-      .select("id");
-    setDeleting(false);
-
-    if (error || !data?.length) {
-      console.error(error);
+    if (!order) return;
+    const ok = confirm("Delete this order? This cannot be undone.");
+    if (!ok) return;
+    const { error } = await supabase.from("orders").delete().eq("id", order.id);
+    if (error) {
       alert("Failed to delete order.");
       return;
     }
-    navigate("/history", { replace: true });
+    navigate("/history");
   };
-
-  if (loading) {
-    return (
-      <>
-        <Navbar />
-        <Container className="my-4 d-flex align-items-center gap-2">
-          <Spinner animation="border" size="sm" /> Loading order…
-        </Container>
-      </>
-    );
-  }
-
-  if (!order) {
-    return (
-      <>
-        <Navbar />
-        <Container className="my-4">
-          <Alert variant="danger">{errorMsg || "Order not found."}</Alert>
-          <Button as={Link} to="/history" variant="secondary">
-            Back to History
-          </Button>
-        </Container>
-      </>
-    );
-  }
 
   return (
     <>
@@ -231,231 +200,239 @@ export default function EditOrderPage() {
       <Container className="my-4">
         <div className="d-flex justify-content-between align-items-center mb-3">
           <h2 className="mb-0">Edit Order</h2>
-          {order?.order_code && (
-            <span
-              className="badge bg-secondary ms-2"
-              style={{ alignSelf: "center" }}
-            >
-              {order.order_code}
-            </span>
-          )}
           <div className="d-flex gap-2">
-            <Button
-              onClick={handleDelete}
-              variant="outline-danger"
-              size="sm"
-              disabled={deleting}
-            >
-              {deleting ? "Deleting…" : "Delete Order"}
-            </Button>
-            <Button
-              as={Link}
-              to="/history"
-              variant="outline-secondary"
-              size="sm"
-            >
-              Cancel
+            <Button variant="outline-secondary" as={Link} to="/history">
+              Back to History
             </Button>
           </div>
         </div>
 
-        {errorMsg && <Alert variant="danger">{errorMsg}</Alert>}
+        {(loading || loadingProducts) && (
+          <div className="d-flex align-items-center gap-2">
+            <Spinner animation="border" size="sm" /> Loading…
+          </div>
+        )}
+        {(errorMsg || productsError) && (
+          <Alert variant="danger">{errorMsg || productsError}</Alert>
+        )}
+        {!loading && !order && !errorMsg && <Alert variant="warning">Order not found.</Alert>}
 
-        <Row>
-          {/* Left: Customer */}
-          <Col md={6}>
-            <Card className="mb-3">
-              <Card.Body>
-                <h5 className="mb-3">Customer</h5>
+        {!loading && order && (
+          <Row className="g-4">
+            <Col lg={7}>
+              <Card className="shadow-sm">
+                <Card.Header>Items</Card.Header>
+                <Card.Body>
+                  <Table hover responsive>
+                    <thead>
+                      <tr>
+                        <th style={{ width: 90 }}>ID</th>
+                        <th>Product</th>
+                        <th style={{ width: 120, textAlign: "right" }}>Price</th>
+                        <th style={{ width: 160, textAlign: "center" }}>Quantity</th>
+                        <th style={{ width: 120, textAlign: "right" }}>Line Total</th>
+                        <th style={{ width: 80 }}></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {lines.map((l) => {
+                        const name = getName(l.id);
+                        const price = getPrice(l.id);
+                        return (
+                          <tr key={l.id}>
+                            <td>{l.id}</td>
+                            <td>{name}</td>
+                            <td style={{ textAlign: "right" }}>
+                              {price ? formatCurrency(price) : "—"}
+                            </td>
+                            <td>
+                              <div className="d-flex justify-content-center gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline-secondary"
+                                  onClick={() => dec(l.id)}
+                                >
+                                  −
+                                </Button>
+                                <Form.Control
+                                  value={l.quantity}
+                                  onChange={(e) => {
+                                    const n = Number(e.target.value);
+                                    if (!Number.isFinite(n) || n < 0) return;
+                                    setLines((prev) =>
+                                      prev.map((x) =>
+                                        x.id === l.id ? { ...x, quantity: n } : x
+                                      )
+                                    );
+                                  }}
+                                  style={{ width: 64, textAlign: "center" }}
+                                />
+                                <Button
+                                  size="sm"
+                                  variant="outline-secondary"
+                                  onClick={() => inc(l.id)}
+                                >
+                                  +
+                                </Button>
+                              </div>
+                            </td>
+                            <td style={{ textAlign: "right" }}>
+                              {price ? formatCurrency(price * l.quantity) : "—"}
+                            </td>
+                            <td>
+                              <Button variant="outline-danger" size="sm" onClick={() => remove(l.id)}>
+                                Remove
+                              </Button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {lines.length === 0 && (
+                        <tr>
+                          <td colSpan={6} className="text-center text-muted">
+                            No items in this order.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </Table>
 
-                <Form.Group className="mb-3">
-                  <Form.Label>Customer Name</Form.Label>
-                  <Form.Control
-                    value={customerName}
-                    onChange={(e) => setCustomerName(e.target.value)}
-                  />
-                </Form.Group>
+                  <Row className="g-2 align-items-end">
+                    <Col md={6}>
+                      <Form.Label>Add Product</Form.Label>
+                      <Form.Select
+                        value={addProductId}
+                        onChange={(e) => setAddProductId(Number(e.target.value) || "")}
+                      >
+                        <option value="">Select a product…</option>
+                        {/* Active Supabase products first */}
+                        {products.map((p) => (
+                          <option key={`p-${p.id}`} value={p.id}>
+                            #{p.id} — {p.name} ({formatCurrency(p.price)})
+                          </option>
+                        ))}
+                        {/* Legacy fallback items (only those not in products) */}
+                        {Array.from(
+                          new Map(
+                            (legacyItems as any[]).map((it: any) => [it.id, it])
+                          ).values()
+                        )
+                          .filter((it: any) => !byId.get(it.id))
+                          .map((it: any) => (
+                            <option key={`l-${it.id}`} value={it.id}>
+                              #{it.id} — {it.name} (legacy {formatCurrency(it.price)})
+                            </option>
+                          ))}
+                      </Form.Select>
+                    </Col>
+                    <Col md="auto">
+                      <Form.Label>Qty</Form.Label>
+                      <Form.Control
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={addQty}
+                        onChange={(e) => setAddQty(Math.max(1, Number(e.target.value) || 1))}
+                        style={{ width: 100 }}
+                      />
+                    </Col>
+                    <Col md="auto">
+                      <Button onClick={addLine}>Add</Button>
+                    </Col>
+                  </Row>
+                </Card.Body>
+              </Card>
+            </Col>
 
-                <Form.Group className="mb-3">
-                  <Form.Label>Customer Phone</Form.Label>
-                  <Form.Control
-                    type="tel"
-                    value={customerPhone}
-                    onChange={(e) => setCustomerPhone(e.target.value)}
-                  />
-                </Form.Group>
-
-                <Form.Group className="mb-3">
-                  <Form.Label>Email (optional)</Form.Label>
-                  <Form.Control
-                    type="email"
-                    value={customerEmail}
-                    onChange={(e) => setCustomerEmail(e.target.value)}
-                  />
-                </Form.Group>
-
-                <Form.Group className="mb-3">
-                  <Form.Label>Staff Name</Form.Label>
-                  <Form.Control
-                    value={staffName}
-                    onChange={(e) => setStaffName(e.target.value)}
-                  />
-                </Form.Group>
-
-                <Form.Group className="mb-3">
-                  <Form.Label>Deposit Paid</Form.Label>
-                  <Form.Control
-                    type="number"
-                    min={0}
-                    step="0.01"
-                    value={depositPaid}
-                    onChange={(e) => setDepositPaid(Number(e.target.value))}
-                  />
-                  <Form.Text className="text-muted">
-                    Balance updates automatically.
-                  </Form.Text>
-                </Form.Group>
-
-                {/* NEW: Notes */}
-                <Form.Group className="mb-3">
-                  <Form.Label>Notes (optional)</Form.Label>
-                  <Form.Control
-                    as="textarea"
-                    rows={3}
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    placeholder="e.g. Daughter is collecting, deposit to be paid 18/12, etc."
-                  />
-                </Form.Group>
-              </Card.Body>
-            </Card>
-          </Col>
-
-          {/* Right: Items */}
-          <Col md={6}>
-            <Card className="mb-3">
-              <Card.Body>
-                <h5 className="mb-3">Items</h5>
-
-                {items.length === 0 && (
-                  <div className="text-muted mb-2">No items in this order.</div>
-                )}
-
-                {items.map((line) => {
-                  const p = byId.get(line.id);
-                  const price = p?.price ?? 0;
-                  const name = p?.name ?? `Item #${line.id} (inactive)`;
-                  const lineTotal = price * line.quantity;
-
-                  return (
-                    <div
-                      key={line.id}
-                      className="d-flex align-items-center justify-content-between mb-2"
-                    >
-                      <div>
-                        <div>{name}</div>
-                        <div
-                          className="text-muted"
-                          style={{ fontSize: ".9rem" }}
-                        >
-                          {formatCurrency(price)} ×
-                        </div>
-                      </div>
-
-                      <div className="d-flex align-items-center gap-2">
+            <Col lg={5}>
+              <Card className="shadow-sm mb-3">
+                <Card.Header>Customer & Staff</Card.Header>
+                <Card.Body>
+                  <Row className="g-3">
+                    <Col md={6}>
+                      <Form.Label>Customer Name</Form.Label>
+                      <Form.Control
+                        value={customerName}
+                        onChange={(e) => setCustomerName(e.target.value)}
+                      />
+                    </Col>
+                    <Col md={6}>
+                      <Form.Label>Staff Name</Form.Label>
+                      <Form.Control
+                        value={staffName}
+                        onChange={(e) => setStaffName(e.target.value)}
+                      />
+                    </Col>
+                    <Col md={6}>
+                      <Form.Label>Email</Form.Label>
+                      <Form.Control
+                        type="email"
+                        value={customerEmail ?? ""}
+                        onChange={(e) => setCustomerEmail(e.target.value)}
+                      />
+                    </Col>
+                    <Col md={6}>
+                      <Form.Label>Phone</Form.Label>
+                      <Form.Control
+                        value={customerPhone}
+                        onChange={(e) => setCustomerPhone(e.target.value)}
+                      />
+                    </Col>
+                    <Col md={6}>
+                      <Form.Label>Deposit Paid</Form.Label>
+                      <InputGroup>
+                        <InputGroup.Text>€</InputGroup.Text>
                         <Form.Control
                           type="number"
                           min={0}
-                          value={line.quantity}
-                          onChange={(e) =>
-                            updateQty(
-                              line.id,
-                              Number((e.target as HTMLInputElement).value)
-                            )
-                          }
-                          style={{ width: "6rem" }}
+                          step="0.01"
+                          value={depositPaid}
+                          onChange={(e) => setDepositPaid(e.target.value)}
                         />
-                        <div style={{ width: "7rem", textAlign: "right" }}>
-                          {formatCurrency(lineTotal)}
-                        </div>
-                        <Button
-                          variant="outline-danger"
-                          size="sm"
-                          onClick={() => removeLine(line.id)}
-                          title="Remove line"
-                        >
-                          ✕
-                        </Button>
-                      </div>
-                    </div>
-                  );
-                })}
+                      </InputGroup>
+                    </Col>
+                    <Col md={12}>
+                      <Form.Label>Notes</Form.Label>
+                      <Form.Control
+                        as="textarea"
+                        rows={3}
+                        value={notes}
+                        onChange={(e) => setNotes(e.target.value)}
+                        placeholder="Customer-specific instructions…"
+                      />
+                    </Col>
+                  </Row>
+                </Card.Body>
+              </Card>
 
-                <hr />
-
-                {/* Add new item */}
-                <div className="d-flex align-items-center gap-2">
-                  <InputGroup>
-                    <Form.Select
-                      value={addProductId}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setAddProductId(val === "" ? "" : Number(val));
-                      }}
-                    >
-                      <option value="">Select product…</option>
-                      {products.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name} — {formatCurrency(p.price)}
-                        </option>
-                      ))}
-                    </Form.Select>
-                    <Form.Control
-                      type="number"
-                      min={1}
-                      value={addQty}
-                      onChange={(e) =>
-                        setAddQty(Math.max(1, Number(e.target.value)))
-                      }
-                      style={{ maxWidth: "7rem" }}
-                    />
-                    <Button
-                      variant="success"
-                      onClick={addLine}
-                      disabled={addProductId === "" || addQty <= 0}
-                    >
-                      Add
+              <Card className="shadow-sm">
+                <Card.Header>Totals</Card.Header>
+                <Card.Body>
+                  <div className="d-flex justify-content-between">
+                    <span>Subtotal</span>
+                    <strong>{formatCurrency(subtotal)}</strong>
+                  </div>
+                  <div className="d-flex justify-content-between">
+                    <span>Deposit</span>
+                    <strong>{formatCurrency(deposit)}</strong>
+                  </div>
+                  <div className="d-flex justify-content-between fs-5 mt-2">
+                    <span>Balance</span>
+                    <strong>{formatCurrency(balance)}</strong>
+                  </div>
+                  <div className="d-flex justify-content-end gap-2 mt-3">
+                    <Button variant="outline-danger" onClick={handleDelete}>
+                      Delete Order
                     </Button>
-                  </InputGroup>
-                </div>
-              </Card.Body>
-            </Card>
-
-            {/* Totals */}
-            <Card>
-              <Card.Body>
-                <div className="d-flex justify-content-between">
-                  <span className="fw-bold">Subtotal</span>
-                  <span>{formatCurrency(subtotal)}</span>
-                </div>
-                <div className="d-flex justify-content-between">
-                  <span>Deposit</span>
-                  <span>{formatCurrency(Number(depositPaid) || 0)}</span>
-                </div>
-                <div className="d-flex justify-content-between fw-bold fs-5">
-                  <span>Balance</span>
-                  <span>{formatCurrency(balance)}</span>
-                </div>
-              </Card.Body>
-            </Card>
-
-            <div className="d-flex justify-content-end mt-3">
-              <Button onClick={handleSave} disabled={saving} variant="success">
-                {saving ? "Saving…" : "Save Changes"}
-              </Button>
-            </div>
-          </Col>
-        </Row>
+                    <Button variant="primary" onClick={handleSave}>
+                      Save Changes
+                    </Button>
+                  </div>
+                </Card.Body>
+              </Card>
+            </Col>
+          </Row>
+        )}
       </Container>
     </>
   );
