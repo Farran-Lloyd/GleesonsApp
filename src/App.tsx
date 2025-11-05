@@ -9,6 +9,7 @@ import ReceiptPage from "./pages/ReceiptPage";
 import AuthPage from "./pages/AuthPage";
 import { AuthProvider } from "./context/AuthContext";
 import RequireAuth from "./components/RequireAuth";
+import EditOrder from "./pages/EditOrder";
 
 export default function App() {
   return (
@@ -66,6 +67,8 @@ export default function App() {
               </RequireAuth>
             }
           />
+          <Route path="/edit-order/:id" element={<EditOrder />} />
+
         </Routes>
       </OrderList>
     </AuthProvider>
