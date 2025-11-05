@@ -1,39 +1,43 @@
+// src/components/OrderItem.tsx
 import { Button, Stack } from "react-bootstrap";
-import { useOrder } from "../context/OrderContext";
-import storeItems from "../data/items.json";
+import { useOrder, OrderItem as OrderItemType } from "../context/OrderContext";
+import { useProducts } from "../hooks/useProducts";
 import { formatCurrency } from "../utilities/formatCurrency";
 
-type OrderItemProps = {
-  id: number;
-  quantity: number;
-};
+type Props = OrderItemType; // { id: number; quantity: number }
 
-export function OrderItem({ id, quantity }: OrderItemProps) {
-  const { removeFromOrder } = useOrder();
-  const item = storeItems.find((i) => i.id === id);
-  if (item == null) return null;
+export function OrderItem({ id, quantity }: Props) {
+  const { increaseOrderQuantity, decreseOrderQuantity, removeFromOrder } = useOrder();
+  const { byId } = useProducts();
+
+  const product = byId.get(id);
+  const name = product?.name ?? `Item #${id}`;
+  const price = product?.price ?? 0;
 
   return (
-    <Stack direction="horizontal" gap={2}>
+    <Stack direction="horizontal" gap={2} className="d-flex align-items-center">
       <div className="me-auto">
-        <div>
-          {item.name}{" "}
-          {quantity > 1 && (
-            <span className="text-muted" style={{ fontSize: ".65rem" }}>
-              x{quantity}
-            </span>
-          )}
-        </div>
-        <div className="text-muted" style={{ fontSize: ".75rem" }}>
-          {formatCurrency(item.price)}
+        <div className="fw-semibold">{name}</div>
+        <div className="text-muted" style={{ fontSize: ".9rem" }}>
+          {quantity} × {formatCurrency(price)}
         </div>
       </div>
-      <div> {formatCurrency(item.price * quantity)} </div>
-      <Button
-        variant="outline-danger"
-        size="sm"
-        onClick={() => removeFromOrder(item.id)}
-      >&times;</Button>
+
+      <div className="text-end" style={{ minWidth: 88 }}>
+        {formatCurrency(price * quantity)}
+      </div>
+
+      <div className="d-flex align-items-center gap-2">
+        <Button variant="outline-secondary" size="sm" onClick={() => decreseOrderQuantity(id)}>
+          −
+        </Button>
+        <Button variant="outline-secondary" size="sm" onClick={() => increaseOrderQuantity(id)}>
+          +
+        </Button>
+        <Button variant="outline-danger" size="sm" onClick={() => removeFromOrder(id)}>
+          Remove
+        </Button>
+      </div>
     </Stack>
   );
 }

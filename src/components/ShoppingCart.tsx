@@ -1,30 +1,28 @@
+// src/components/ShoppingCart.tsx
 import { Button, Offcanvas, Stack } from "react-bootstrap";
 import { useOrder } from "../context/OrderContext";
 import { OrderItem } from "./OrderItem";
 import { formatCurrency } from "../utilities/formatCurrency";
-import storeItems from "../data/items.json";
+import { useProducts } from "../hooks/useProducts";
 
 type ShoppingCartProps = {
   isOpen: boolean;
 };
 
 export function ShoppingCart({ isOpen }: ShoppingCartProps) {
-  // ✅ Get everything needed from the Order context
   const { closeCart, orderItems, navigateToOrderDetails } = useOrder();
+  const { byId } = useProducts();
 
-  // (You had `addToOrder` here — removing since it's not used)
-  // const { addToOrder } = useOrder();
+  const total = orderItems.reduce((sum, line) => {
+    const p = byId.get(line.id);
+    const price = p?.price ?? 0;
+    return sum + price * line.quantity;
+    }, 0);
 
-  // 🧠 Calculate total price (unchanged)
-  const total = orderItems.reduce((total, orderItem) => {
-    const item = storeItems.find((i) => i.id === orderItem.id);
-    return total + (item?.price || 0) * orderItem.quantity;
-  }, 0);
-
-  // 🧾 Handle Order button click
-  const handleOrderClick = () => {
-    closeCart(); // close the cart drawer
-    navigateToOrderDetails(); // go to Order Details page
+  const handleOrder = () => {
+    // optional: close first for a smoother UX
+    closeCart();
+    navigateToOrderDetails();
   };
 
   return (
@@ -32,29 +30,27 @@ export function ShoppingCart({ isOpen }: ShoppingCartProps) {
       <Offcanvas.Header closeButton>
         <Offcanvas.Title>Cart</Offcanvas.Title>
       </Offcanvas.Header>
-
       <Offcanvas.Body>
         <Stack gap={3}>
-          {orderItems.length === 0 && <div>Your cart is empty</div>}
-
-          {orderItems.map((item) => (
-            <OrderItem key={item.id} {...item} />
-          ))}
+          {orderItems.length === 0 ? (
+            <div className="text-muted">Your cart is empty.</div>
+          ) : (
+            orderItems.map((item) => <OrderItem key={item.id} {...item} />)
+          )}
 
           <div className="ms-auto fw-bold fs-5">
             Total {formatCurrency(total)}
           </div>
-
-          {/* ✅ Order Button */}
-          <Button
-            className="w-100 mt-3"
-            variant="success"
-            disabled={orderItems.length === 0}
-            onClick={handleOrderClick}
-          >
-            Order
-          </Button>
         </Stack>
+
+        <Button
+          className="mt-3 w-100"
+          variant="success"
+          onClick={handleOrder}
+          disabled={orderItems.length === 0}
+        >
+          Order
+        </Button>
       </Offcanvas.Body>
     </Offcanvas>
   );
