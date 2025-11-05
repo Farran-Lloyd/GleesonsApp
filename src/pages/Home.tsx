@@ -54,7 +54,7 @@ export default function Home() {
     // Close and reset. Realtime will add it automatically; refresh is optional.
     setShowAdd(false);
     resetForm();
-    // await refresh();
+    await refresh();
   };
 
   return (
