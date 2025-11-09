@@ -54,21 +54,64 @@ export default function Inventory() {
   const thisYearStartISO = new Date(Date.UTC(lastYear + 1, 0, 1, 0, 0, 0)).toISOString();   // e.g. 2025-01-01T00:00:00.000Z
   const [lastYearOnly, setLastYearOnly] = useState(false);
 
-  // Ensure items is an array of {id:number, quantity:number}
-  const normalizeItems = (raw: any): { id: number; quantity: number }[] => {
-    try {
-      const val = typeof raw === "string" ? JSON.parse(raw) : raw;
-      if (!Array.isArray(val)) return [];
-      return val
-        .map((x) => ({
-          id: Number((x && x.id) ?? NaN),
-          quantity: Number((x && x.quantity) ?? NaN),
-        }))
-        .filter((x) => Number.isFinite(x.id) && Number.isFinite(x.quantity) && x.quantity > 0);
-    } catch {
-      return [];
+  // Replace your normalizeItems with this tolerant version:
+const normalizeItems = (raw: any): { id: number; quantity: number }[] => {
+  if (raw == null) return [];
+
+  // If Supabase sent a JSON string, parse it.
+  let val: any;
+  try {
+    val = typeof raw === "string" ? JSON.parse(raw) : raw;
+  } catch {
+    return [];
+  }
+
+  const out: { id: number; quantity: number }[] = [];
+
+  // Helper to push a single line regardless of field names/types
+  const pushLine = (rec: any) => {
+    if (!rec) return;
+
+    // Accept id | productId | product_id
+    const rid =
+      rec.id ?? rec.productId ?? rec.product_id ?? rec.product_id ?? null;
+
+    // Accept quantity | qty | count | amount
+    const rqty =
+      rec.quantity ?? rec.qty ?? rec.count ?? rec.amount ?? rec.Quantity ?? null;
+
+    // Coerce to numbers (strings -> numbers)
+    const idNum = Number(rid);
+    const qtyNum = Number(rqty);
+
+    if (Number.isFinite(idNum) && Number.isFinite(qtyNum) && qtyNum > 0) {
+      out.push({ id: idNum, quantity: qtyNum });
     }
   };
+
+  // Case A: array of lines
+  if (Array.isArray(val)) {
+    for (const rec of val) pushLine(rec);
+    return out;
+  }
+
+  // Case B: object map like { "22": 3, "99": 1 } or { "22": { qty: 3 } }
+  if (val && typeof val === "object") {
+    for (const [k, v] of Object.entries(val)) {
+      if (v != null && typeof v === "object") {
+        // e.g. { "22": { qty: "3" } }
+        pushLine({ id: k, ...(v as any) });
+      } else {
+        // e.g. { "22": "3" }
+        pushLine({ id: k, quantity: v });
+      }
+    }
+    return out;
+  }
+
+  return out;
+};
+
 
   const fetchOrders = useCallback(async () => {
     setLoading(true);
