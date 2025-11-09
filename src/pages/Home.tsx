@@ -1,4 +1,3 @@
-// src/pages/Home.tsx
 import { useMemo, useState } from "react";
 import {
   Button,
@@ -10,8 +9,9 @@ import {
   Alert,
   Spinner,
   Modal,
-  Accordion,
   InputGroup,
+  Dropdown,
+  ButtonGroup,
 } from "react-bootstrap";
 import Navbar from "../components/Navbar";
 import { useProducts } from "../hooks/useProducts";
@@ -19,109 +19,147 @@ import { useOrder } from "../context/OrderContext";
 import { supabase } from "../lib/supabase";
 import { formatCurrency } from "../utilities/formatCurrency";
 
+type EditProduct = {
+  id: number;
+  name: string;
+  price: string; // keep as string for input
+  description: string | null;
+  category: string | null;
+  active: boolean;
+  archived?: boolean | null;
+};
+
 export default function Home() {
-  const { products, loading, errorMsg, refresh } = useProducts();
+  const { products, loading, errorMsg } = useProducts();
   const { increaseOrderQuantity } = useOrder();
 
-  // Add-product modal state
-  const [showAdd, setShowAdd] = useState(false);
-  const [newItem, setNewItem] = useState({
-    name: "",
-    price: "",
-    description: "",
-  });
-
-  // Category selection
-  const [categoryChoice, setCategoryChoice] = useState<string>(""); // chosen existing OR "NEW"
-  const [newCategory, setNewCategory] = useState<string>("");
-
-  // Optional search to filter categories/products
+  // UI state
   const [q, setQ] = useState("");
+  const [showAdd, setShowAdd] = useState(false);
+  const [newItem, setNewItem] = useState({ name: "", price: "", description: "", category: "" });
 
-  // Distinct category list (sorted, '' => Uncategorized)
-  const categories = useMemo(() => {
-    const set = new Set<string>();
-    for (const p of products) {
-      set.add(p.category?.trim() || "Uncategorized");
-    }
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [products]);
+  // Edit modal
+  const [showEdit, setShowEdit] = useState(false);
+  const [editing, setEditing] = useState<EditProduct | null>(null);
 
-  // Map of category -> product[]
+  // Delete confirm
+  const [showDelete, setShowDelete] = useState(false);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+
+  // Group by category (hide Uncategorized by default? keep visible here)
   const grouped = useMemo(() => {
     const needle = q.trim().toLowerCase();
     const map = new Map<string, typeof products>();
     for (const p of products) {
       const cat = p.category?.trim() || "Uncategorized";
-      if (
-        !needle ||
-        p.name.toLowerCase().includes(needle) ||
-        cat.toLowerCase().includes(needle)
-      ) {
-        if (!map.has(cat)) map.set(cat, []);
-        map.get(cat)!.push(p);
-      }
+      const hits = !needle || p.name.toLowerCase().includes(needle) || cat.toLowerCase().includes(needle);
+      if (!hits) continue;
+      if (!map.has(cat)) map.set(cat, []);
+      map.get(cat)!.push(p);
     }
-    // sort products by name within each category
-    for (const [k, arr] of map) {
-      arr.sort((a, b) => a.name.localeCompare(b.name));
-    }
-    // return entries sorted by category name
+    for (const [, arr] of map) arr.sort((a, b) => a.name.localeCompare(b.name));
     return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   }, [products, q]);
 
+  // Create Product
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-
     const price = Number(newItem.price);
     if (!newItem.name.trim() || isNaN(price) || price < 0) {
       alert("Enter a valid name and non-negative price.");
       return;
     }
-
-    // Resolve category: pick existing or new text
-    let categoryToUse = "";
-    if (categoryChoice === "NEW") {
-      categoryToUse = newCategory.trim();
-    } else if (categoryChoice) {
-      categoryToUse = categoryChoice.trim();
-    }
-    // empty string means "Uncategorized"
-
     const { error } = await supabase.from("products").insert({
       name: newItem.name.trim(),
       price,
-      description: newItem.description.trim() || null,
+      description: newItem.description?.trim() || null,
+      category: newItem.category?.trim() || null,
       active: true,
-      category: categoryToUse || null, // store null for uncategorized
+      archived: false,
     });
-
     if (error) {
       console.error(error);
       alert("Failed to add product.");
       return;
     }
-
     setShowAdd(false);
-    setNewItem({ name: "", price: "", description: "" });
-    setCategoryChoice("");
-    setNewCategory("");
-    await refresh(); // ensure fresh list
+    setNewItem({ name: "", price: "", description: "", category: "" });
+    // Realtime will update the list
+  };
+
+  // Open Edit
+  const openEdit = (p: any) => {
+    setEditing({
+      id: p.id,
+      name: p.name ?? "",
+      price: String(p.price ?? ""),
+      description: p.description ?? "",
+      category: p.category ?? "",
+      active: Boolean(p.active),
+      archived: Boolean(p.archived),
+    });
+    setShowEdit(true);
+  };
+
+  // Save Edit
+  const handleEditSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editing) return;
+    const priceNum = Number(editing.price);
+    if (!editing.name.trim() || isNaN(priceNum) || priceNum < 0) {
+      alert("Enter a valid name and non-negative price.");
+      return;
+    }
+    const { error } = await supabase
+      .from("products")
+      .update({
+        name: editing.name.trim(),
+        price: priceNum,
+        description: editing.description?.trim() || null,
+        category: editing.category?.trim() || null,
+        active: editing.active,
+        archived: editing.archived ?? false,
+      })
+      .eq("id", editing.id);
+    if (error) {
+      console.error(error);
+      alert("Failed to update product.");
+      return;
+    }
+    setShowEdit(false);
+    setEditing(null);
+  };
+
+  // Delete Product
+  const confirmDelete = (id: number) => {
+    setDeletingId(id);
+    setShowDelete(true);
+  };
+  const handleDelete = async () => {
+    if (!deletingId) return;
+    const { error } = await supabase.from("products").delete().eq("id", deletingId);
+    if (error) {
+      console.error(error);
+      alert("Failed to delete product.");
+    }
+    setShowDelete(false);
+    setDeletingId(null);
   };
 
   return (
     <>
       <Navbar />
       <Container className="my-4">
-        <div className="d-flex flex-wrap gap-2 justify-content-between align-items-center mb-3">
+        <div className="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
           <h2 className="mb-0">New Order</h2>
           <div className="d-flex gap-2">
-            <InputGroup style={{ maxWidth: 320 }}>
+            <InputGroup>
               <InputGroup.Text>Search</InputGroup.Text>
               <Form.Control
-                placeholder="Category or product…"
+                placeholder="Product or category…"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
+                style={{ maxWidth: 280 }}
               />
             </InputGroup>
             <Button onClick={() => setShowAdd(true)} variant="primary">
@@ -137,58 +175,59 @@ export default function Home() {
         )}
         {errorMsg && <Alert variant="danger">{errorMsg}</Alert>}
 
-        {/* Collapsible categories */}
-        {!loading && !errorMsg && (
-          <Accordion alwaysOpen>
-            {grouped.map(([cat, items], idx) => (
-              <Accordion.Item eventKey={String(idx)} key={cat}>
-                <Accordion.Header>
-                  <div className="d-flex justify-content-between w-100 pe-2">
-                    <span className="fw-semibold">
-                      {cat}{" "}
-                      <span className="text-muted" style={{ fontSize: ".9rem" }}>
-                        ({items.length})
-                      </span>
-                    </span>
-                  </div>
-                </Accordion.Header>
-                <Accordion.Body>
-                  <Row xs={1} sm={2} md={3} lg={4} xl={5} className="g-3">
-                    {items.map((p) => (
-                      <Col key={p.id}>
-                        <Card className="h-100">
-                          <Card.Body>
-                            <Card.Title className="d-flex justify-content-between align-items-start">
-                              <span>{p.name}</span>
-                              <span className="fw-bold">{formatCurrency(p.price)}</span>
-                            </Card.Title>
-                            {p.description && (
-                              <Card.Text className="text-muted" style={{ fontSize: ".9rem" }}>
-                                {p.description}
-                              </Card.Text>
-                            )}
-                          </Card.Body>
-                          <Card.Footer className="bg-white border-0">
+        {!loading && grouped.length === 0 && (
+          <Alert variant="info">No products found. Try adding one.</Alert>
+        )}
+
+        {!loading &&
+          grouped.map(([cat, arr]) => (
+            <div key={cat} className="mb-4">
+              <h5 className="mb-3">{cat}</h5>
+              <Row xs={1} sm={2} md={3} lg={4} xl={5} className="g-3">
+                {arr.map((p) => (
+                  <Col key={p.id}>
+                    <Card className="h-100">
+                      <Card.Body>
+                        <div className="d-flex justify-content-between align-items-start">
+                          <Card.Title className="me-2">{p.name}</Card.Title>
+                          <Dropdown as={ButtonGroup} align="end">
                             <Button
-                              className="w-100"
+                              size="sm"
                               variant="success"
                               onClick={() => increaseOrderQuantity(p.id)}
                             >
-                              Add to Cart
+                              Add
                             </Button>
-                          </Card.Footer>
-                        </Card>
-                      </Col>
-                    ))}
-                  </Row>
-                </Accordion.Body>
-              </Accordion.Item>
-            ))}
-            {grouped.length === 0 && (
-              <div className="text-muted">No products match your search.</div>
-            )}
-          </Accordion>
-        )}
+                            <Dropdown.Toggle split size="sm" variant="outline-secondary" />
+                            <Dropdown.Menu>
+                              <Dropdown.Item onClick={() => openEdit(p)}>Edit</Dropdown.Item>
+                              <Dropdown.Item onClick={() => confirmDelete(p.id)} className="text-danger">
+                                Delete…
+                              </Dropdown.Item>
+                            </Dropdown.Menu>
+                          </Dropdown>
+                        </div>
+
+                        {p.description && (
+                          <Card.Text className="text-muted" style={{ fontSize: ".9rem" }}>
+                            {p.description}
+                          </Card.Text>
+                        )}
+                      </Card.Body>
+                      <Card.Footer className="bg-white border-0 d-flex justify-content-between">
+                        <small className="text-muted">
+                          {p.category || "—"}
+                          {p.archived ? " • archived" : ""}
+                          {!p.active ? " • inactive" : ""}
+                        </small>
+                        <small className="text-muted">{p.price ? formatCurrency(p.price) : "—"}</small>
+                      </Card.Footer>
+                    </Card>
+                  </Col>
+                ))}
+              </Row>
+            </div>
+          ))}
       </Container>
 
       {/* Add Item Modal */}
@@ -207,7 +246,6 @@ export default function Home() {
                 required
               />
             </Form.Group>
-
             <Form.Group className="mb-3">
               <Form.Label>Price</Form.Label>
               <Form.Control
@@ -220,48 +258,25 @@ export default function Home() {
                 required
               />
             </Form.Group>
-
             <Form.Group className="mb-3">
-              <Form.Label>Description (optional)</Form.Label>
+              <Form.Label>Category</Form.Label>
+              <Form.Control
+                value={newItem.category}
+                onChange={(e) => setNewItem((s) => ({ ...s, category: e.target.value }))}
+                placeholder="e.g. Beef"
+              />
+            </Form.Group>
+            <Form.Group>
+              <Form.Label>Description</Form.Label>
               <Form.Control
                 as="textarea"
                 rows={2}
                 value={newItem.description}
                 onChange={(e) => setNewItem((s) => ({ ...s, description: e.target.value }))}
-                placeholder="Short description"
+                placeholder="Optional"
               />
             </Form.Group>
-
-            {/* Category selection */}
-            <Form.Group className="mb-2">
-              <Form.Label>Category</Form.Label>
-              <Form.Select
-                value={categoryChoice}
-                onChange={(e) => setCategoryChoice(e.target.value)}
-              >
-                <option value="">Uncategorized</option>
-                {categories.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-                <option value="NEW">➕ Create new category…</option>
-              </Form.Select>
-            </Form.Group>
-
-            {categoryChoice === "NEW" && (
-              <Form.Group>
-                <Form.Label>New Category Name</Form.Label>
-                <Form.Control
-                  value={newCategory}
-                  onChange={(e) => setNewCategory(e.target.value)}
-                  placeholder="e.g. Poultry, Beef, Pork"
-                  required
-                />
-              </Form.Group>
-            )}
           </Modal.Body>
-
           <Modal.Footer>
             <Button variant="outline-secondary" onClick={() => setShowAdd(false)}>
               Cancel
@@ -271,6 +286,91 @@ export default function Home() {
             </Button>
           </Modal.Footer>
         </Form>
+      </Modal>
+
+      {/* Edit Item Modal */}
+      <Modal show={showEdit} onHide={() => setShowEdit(false)}>
+        <Form onSubmit={handleEditSave}>
+          <Modal.Header closeButton>
+            <Modal.Title>Edit Item</Modal.Title>
+          </Modal.Header>
+          <Modal.Body>
+            <Form.Group className="mb-3">
+              <Form.Label>Name</Form.Label>
+              <Form.Control
+                value={editing?.name ?? ""}
+                onChange={(e) => setEditing((s) => (s ? { ...s, name: e.target.value } : s))}
+                required
+              />
+            </Form.Group>
+            <Form.Group className="mb-3">
+              <Form.Label>Price</Form.Label>
+              <Form.Control
+                type="number"
+                min={0}
+                step="0.01"
+                value={editing?.price ?? ""}
+                onChange={(e) => setEditing((s) => (s ? { ...s, price: e.target.value } : s))}
+                required
+              />
+            </Form.Group>
+            <Form.Group className="mb-3">
+              <Form.Label>Category</Form.Label>
+              <Form.Control
+                value={editing?.category ?? ""}
+                onChange={(e) => setEditing((s) => (s ? { ...s, category: e.target.value } : s))}
+              />
+            </Form.Group>
+            <Form.Group className="mb-3">
+              <Form.Label>Description</Form.Label>
+              <Form.Control
+                as="textarea"
+                rows={2}
+                value={editing?.description ?? ""}
+                onChange={(e) => setEditing((s) => (s ? { ...s, description: e.target.value } : s))}
+              />
+            </Form.Group>
+            <Form.Check
+              type="switch"
+              id="edit-active"
+              label="Active"
+              checked={!!editing?.active}
+              onChange={(e) => setEditing((s) => (s ? { ...s, active: e.currentTarget.checked } : s))}
+              className="mb-2"
+            />
+            <Form.Check
+              type="switch"
+              id="edit-archived"
+              label="Archived (hide from new orders)"
+              checked={!!editing?.archived}
+              onChange={(e) => setEditing((s) => (s ? { ...s, archived: e.currentTarget.checked } : s))}
+            />
+          </Modal.Body>
+          <Modal.Footer>
+            <Button variant="outline-secondary" onClick={() => setShowEdit(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="primary">
+              Save changes
+            </Button>
+          </Modal.Footer>
+        </Form>
+      </Modal>
+
+      {/* Delete confirm */}
+      <Modal show={showDelete} onHide={() => setShowDelete(false)}>
+        <Modal.Header closeButton>
+          <Modal.Title>Delete product</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>Are you sure you want to permanently delete this item?</Modal.Body>
+        <Modal.Footer>
+          <Button variant="outline-secondary" onClick={() => setShowDelete(false)}>
+            Cancel
+          </Button>
+          <Button variant="danger" onClick={handleDelete}>
+            Delete
+          </Button>
+        </Modal.Footer>
       </Modal>
     </>
   );

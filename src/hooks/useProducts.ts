@@ -10,6 +10,7 @@ export type Product = {
   active: boolean;
   created_at: string;
   category: string | null;    // ⬅️ added
+  archived: boolean;
 };
 
 export function useProducts() {
@@ -25,6 +26,7 @@ export function useProducts() {
       .from("products")
       .select("id,name,price,description,active,created_at,category") // ⬅️ include category
       .eq("active", true)
+      .eq("archived", false)
       .order("created_at", { ascending: false });
 
     if (error) {

@@ -1,69 +1,67 @@
-// src/pages/EditOrder.tsx
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams, Link } from "react-router-dom";
 import {
-  Alert,
-  Button,
-  Card,
-  Col,
   Container,
-  Form,
-  InputGroup,
   Row,
+  Col,
+  Card,
+  Button,
+  Form,
   Spinner,
-  Table,
+  Alert,
+  InputGroup,
 } from "react-bootstrap";
+import { useParams, useNavigate } from "react-router-dom";
 import Navbar from "../components/Navbar";
 import { supabase } from "../lib/supabase";
 import { useProducts } from "../hooks/useProducts";
-import { formatCurrency } from "../utilities/formatCurrency";
 
-// ⬇️ Legacy fallback for items not present in Supabase products
-import legacyItems from "../data/items.json";
-
-// Types that match your orders table
 type OrderRow = {
   id: string;
-  created_at: string;
-  customer_name: string;
+  customer_name: string | null;
   customer_email: string | null;
-  customer_phone: string;
-  staff_name: string;
-  deposit_paid: number;
-  items: { id: number; quantity: number }[];
-  subtotal: number;
-  balance: number;
-  is_complete: boolean;
-  notes?: string | null;
-  order_code?: string | null;
+  customer_phone: string | null;
+  staff_name: string | null;
+  deposit_paid: number | null;
+  items: { id: number; quantity: number }[]; // normalized
+  notes: string | null;
+  created_at: string;
+  is_complete: boolean | null;
 };
 
-type EditableLine = { id: number; quantity: number };
-
-export default function EditOrder() {
+export default function EditOrderPage() {
+  const { id } = useParams();
   const navigate = useNavigate();
-  const { id } = useParams<{ id: string }>();
+  const { byId, loading: loadingProducts, errorMsg: prodError } = useProducts();
 
-  // Products from Supabase
-  const { products, byId, loading: loadingProducts, errorMsg: productsError } = useProducts();
-
-  // Order state
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [order, setOrder] = useState<OrderRow | null>(null);
 
-  // Editable fields
-  const [lines, setLines] = useState<EditableLine[]>([]);
-  const [staffName, setStaffName] = useState("");
-  const [customerName, setCustomerName] = useState("");
-  const [customerEmail, setCustomerEmail] = useState("");
-  const [customerPhone, setCustomerPhone] = useState("");
-  const [depositPaid, setDepositPaid] = useState<string>("0");
-  const [notes, setNotes] = useState<string>("");
+  const [form, setForm] = useState({
+    customer_name: "",
+    customer_email: "",
+    customer_phone: "",
+    staff_name: "",
+    deposit_paid: "",
+    notes: "",
+    is_complete: false,
+  });
 
-  // Add-item controls
-  const [addProductId, setAddProductId] = useState<number | "">("");
-  const [addQty, setAddQty] = useState<number>(1);
+  // Utility to ensure items array
+  const normalizeItems = (raw: any): { id: number; quantity: number }[] => {
+    try {
+      const val = typeof raw === "string" ? JSON.parse(raw) : raw;
+      if (!Array.isArray(val)) return [];
+      return val
+        .map((x) => ({
+          id: Number((x && x.id) ?? NaN),
+          quantity: Number((x && x.quantity) ?? NaN),
+        }))
+        .filter((x) => Number.isFinite(x.id) && Number.isFinite(x.quantity) && x.quantity > 0);
+    } catch {
+      return [];
+    }
+  };
 
   // Load order
   useEffect(() => {
@@ -77,26 +75,36 @@ export default function EditOrder() {
         .eq("id", id)
         .single();
 
-      if (!mounted) return;
-
       if (error || !data) {
         setErrorMsg("Failed to load order.");
-        setOrder(null);
-      } else {
-        const row = {
-          ...data,
-          items: Array.isArray(data.items) ? data.items : [],
-        } as OrderRow;
-
-        setOrder(row);
-        setLines(row.items.map((x) => ({ id: x.id, quantity: x.quantity })));
-        setStaffName(row.staff_name || "");
-        setCustomerName(row.customer_name || "");
-        setCustomerEmail(row.customer_email || "");
-        setCustomerPhone(row.customer_phone || "");
-        setDepositPaid(String(row.deposit_paid ?? 0));
-        setNotes(row.notes ?? "");
+        setLoading(false);
+        return;
       }
+      if (!mounted) return;
+
+      const items = normalizeItems((data as any).items);
+      const row: OrderRow = {
+        id: data.id,
+        customer_name: data.customer_name,
+        customer_email: data.customer_email,
+        customer_phone: data.customer_phone,
+        staff_name: data.staff_name,
+        deposit_paid: data.deposit_paid,
+        items,
+        notes: data.notes,
+        created_at: data.created_at,
+        is_complete: !!data.is_complete,
+      };
+      setOrder(row);
+      setForm({
+        customer_name: row.customer_name || "",
+        customer_email: row.customer_email || "",
+        customer_phone: row.customer_phone || "",
+        staff_name: row.staff_name || "",
+        deposit_paid: row.deposit_paid != null ? String(row.deposit_paid) : "",
+        notes: row.notes || "",
+        is_complete: row.is_complete || false,
+      });
       setLoading(false);
     })();
     return () => {
@@ -104,335 +112,280 @@ export default function EditOrder() {
     };
   }, [id]);
 
-  // Lookup name/price with Supabase → fallback to legacy JSON
-  const legacyById = useMemo(() => {
-    const m = new Map<number, { name: string; price: number }>();
-    (legacyItems as any[]).forEach((it: any) => {
-      if (typeof it?.id === "number") m.set(it.id, { name: it.name, price: it.price });
-    });
-    return m;
-  }, []);
-
-  function getName(id: number) {
-    return byId.get(id)?.name ?? legacyById.get(id)?.name ?? `Item #${id}`;
-  }
-  function getPrice(id: number) {
-    return byId.get(id)?.price ?? legacyById.get(id)?.price ?? 0;
-  }
-
-  // Derived totals
-  const subtotal = useMemo(
-    () => lines.reduce((sum, l) => sum + getPrice(l.id) * Math.max(0, l.quantity), 0),
-    [lines, byId, legacyById]
-  );
-  const deposit = useMemo(() => Math.max(0, Number(depositPaid) || 0), [depositPaid]);
-  const balance = useMemo(() => Math.max(0, subtotal - deposit), [subtotal, deposit]);
-
-  // Mutations on lines
-  const inc = (pid: number) =>
-    setLines((prev) =>
-      prev.map((l) => (l.id === pid ? { ...l, quantity: l.quantity + 1 } : l))
-    );
-  const dec = (pid: number) =>
-    setLines((prev) =>
-      prev
-        .map((l) => (l.id === pid ? { ...l, quantity: l.quantity - 1 } : l))
-        .filter((l) => l.quantity > 0)
-    );
-  const remove = (pid: number) => setLines((prev) => prev.filter((l) => l.id !== pid));
-
-  const addLine = () => {
-    const pid = Number(addProductId);
-    if (!pid || isNaN(pid)) return;
-    if (addQty <= 0) return;
-    setLines((prev) => {
-      const existing = prev.find((l) => l.id === pid);
-      if (existing) {
-        return prev.map((l) => (l.id === pid ? { ...l, quantity: l.quantity + addQty } : l));
-      }
-      return [...prev, { id: pid, quantity: addQty }];
-    });
-    setAddProductId("");
-    setAddQty(1);
+  // Quantity adjust
+  const inc = (pid: number) => {
+    if (!order) return;
+    const items = order.items.slice();
+    const idx = items.findIndex((x) => x.id === pid);
+    if (idx === -1) items.push({ id: pid, quantity: 1 });
+    else items[idx] = { ...items[idx], quantity: items[idx].quantity + 1 };
+    setOrder({ ...order, items });
+  };
+  const dec = (pid: number) => {
+    if (!order) return;
+    const items = order.items
+      .map((x) => (x.id === pid ? { ...x, quantity: x.quantity - 1 } : x))
+      .filter((x) => x.quantity > 0);
+    setOrder({ ...order, items });
+  };
+  const removeLine = (pid: number) => {
+    if (!order) return;
+    setOrder({ ...order, items: order.items.filter((x) => x.id !== pid) });
   };
 
-  // Save
+  // Add new item by selecting a product id
+  const [productSearch, setProductSearch] = useState("");
+  const productOptions = useMemo(() => {
+    const needle = productSearch.trim().toLowerCase();
+    const opts: { id: number; name: string }[] = [];
+    byId.forEach((p, id) => {
+      if (!needle || p.name.toLowerCase().includes(needle)) {
+        opts.push({ id, name: p.name });
+      }
+    });
+    return opts.sort((a, b) => a.name.localeCompare(b.name)).slice(0, 100);
+  }, [byId, productSearch]);
+
+  const addProductToOrder = (pid: number) => {
+    if (!order) return;
+    const items = order.items.slice();
+    const idx = items.findIndex((x) => x.id === pid);
+    if (idx === -1) items.push({ id: pid, quantity: 1 });
+    else items[idx] = { ...items[idx], quantity: items[idx].quantity + 1 };
+    setOrder({ ...order, items });
+    setProductSearch("");
+  };
+
+  // Save (recompute subtotal server-side quietly, but do not display prices)
   const handleSave = async () => {
     if (!order) return;
+
+    // Compute subtotal quietly (using current product prices)
+    let subtotal = 0;
+    for (const line of order.items) {
+      const p = byId.get(line.id);
+      const unit = p?.price ?? 0;
+      subtotal += unit * line.quantity;
+    }
+
+    const depositNum = Number(form.deposit_paid || 0);
+    const balance = Math.max(0, subtotal - (isNaN(depositNum) ? 0 : depositNum));
+
     const { error } = await supabase
       .from("orders")
       .update({
-        staff_name: staffName.trim(),
-        customer_name: customerName.trim(),
-        customer_email: customerEmail.trim() || null,
-        customer_phone: customerPhone.trim(),
-        deposit_paid: deposit,
-        items: lines,
+        customer_name: form.customer_name.trim() || null,
+        customer_email: form.customer_email.trim() || null,
+        customer_phone: form.customer_phone.trim() || null,
+        staff_name: form.staff_name.trim() || null,
+        deposit_paid: isNaN(depositNum) ? 0 : depositNum,
+        items: order.items, // jsonb
+        notes: form.notes.trim() || null,
+        is_complete: form.is_complete,
+        // keep totals consistent (not displayed on UI)
         subtotal,
         balance,
-        notes: notes.trim() || null,
       })
       .eq("id", order.id);
 
     if (error) {
+      console.error(error);
       alert("Failed to save order.");
       return;
     }
     navigate("/history");
   };
 
-  // Delete (kept here; removed from History as requested)
-  const handleDelete = async () => {
-    if (!order) return;
-    const ok = confirm("Delete this order? This cannot be undone.");
-    if (!ok) return;
-    const { error } = await supabase.from("orders").delete().eq("id", order.id);
-    if (error) {
-      alert("Failed to delete order.");
-      return;
-    }
-    navigate("/history");
-  };
+  if (loading || loadingProducts) {
+    return (
+      <>
+        <Navbar />
+        <Container className="my-4">
+          <Spinner animation="border" size="sm" /> Loading…
+        </Container>
+      </>
+    );
+  }
+
+  if (errorMsg || prodError) {
+    return (
+      <>
+        <Navbar />
+        <Container className="my-4">
+          <Alert variant="danger">{errorMsg || prodError}</Alert>
+        </Container>
+      </>
+    );
+  }
+
+  if (!order) {
+    return (
+      <>
+        <Navbar />
+        <Container className="my-4">
+          <Alert variant="warning">Order not found.</Alert>
+        </Container>
+      </>
+    );
+  }
 
   return (
     <>
       <Navbar />
       <Container className="my-4">
-        <div className="d-flex justify-content-between align-items-center mb-3">
-          <h2 className="mb-0">Edit Order</h2>
-          <div className="d-flex gap-2">
-            <Button variant="outline-secondary" as={Link} to="/history">
-              Back to History
-            </Button>
-          </div>
-        </div>
+        <Row className="g-4">
+          {/* Left: customer details (no price fields) */}
+          <Col md={6}>
+            <Card>
+              <Card.Header>Customer</Card.Header>
+              <Card.Body>
+                <Form.Group className="mb-3">
+                  <Form.Label>Name</Form.Label>
+                  <Form.Control
+                    value={form.customer_name}
+                    onChange={(e) => setForm((s) => ({ ...s, customer_name: e.target.value }))}
+                  />
+                </Form.Group>
+                <Form.Group className="mb-3">
+                  <Form.Label>Email</Form.Label>
+                  <Form.Control
+                    type="email"
+                    value={form.customer_email}
+                    onChange={(e) => setForm((s) => ({ ...s, customer_email: e.target.value }))}
+                  />
+                </Form.Group>
+                <Form.Group className="mb-3">
+                  <Form.Label>Phone</Form.Label>
+                  <Form.Control
+                    value={form.customer_phone}
+                    onChange={(e) => setForm((s) => ({ ...s, customer_phone: e.target.value }))}
+                  />
+                </Form.Group>
+                <Form.Group className="mb-3">
+                  <Form.Label>Staff</Form.Label>
+                  <Form.Control
+                    value={form.staff_name}
+                    onChange={(e) => setForm((s) => ({ ...s, staff_name: e.target.value }))}
+                  />
+                </Form.Group>
+                <Form.Group className="mb-3">
+                  <Form.Label>Deposit Paid</Form.Label>
+                  <Form.Control
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={form.deposit_paid}
+                    onChange={(e) => setForm((s) => ({ ...s, deposit_paid: e.target.value }))}
+                  />
+                </Form.Group>
+                <Form.Group>
+                  <Form.Label>Notes</Form.Label>
+                  <Form.Control
+                    as="textarea"
+                    rows={3}
+                    value={form.notes}
+                    onChange={(e) => setForm((s) => ({ ...s, notes: e.target.value }))}
+                  />
+                </Form.Group>
 
-        {(loading || loadingProducts) && (
-          <div className="d-flex align-items-center gap-2">
-            <Spinner animation="border" size="sm" /> Loading…
-          </div>
-        )}
-        {(errorMsg || productsError) && (
-          <Alert variant="danger">{errorMsg || productsError}</Alert>
-        )}
-        {!loading && !order && !errorMsg && <Alert variant="warning">Order not found.</Alert>}
+                <Form.Check
+                  id="complete"
+                  type="switch"
+                  className="mt-3"
+                  label="Mark as complete"
+                  checked={form.is_complete}
+                  onChange={(e) => setForm((s) => ({ ...s, is_complete: e.currentTarget.checked }))}
+                />
+              </Card.Body>
+            </Card>
+          </Col>
 
-        {!loading && order && (
-          <Row className="g-4">
-            <Col lg={7}>
-              <Card className="shadow-sm">
-                <Card.Header>Items</Card.Header>
-                <Card.Body>
-                  <Table hover responsive>
-                    <thead>
-                      <tr>
-                        <th style={{ width: 90 }}>ID</th>
-                        <th>Product</th>
-                        <th style={{ width: 120, textAlign: "right" }}>Price</th>
-                        <th style={{ width: 160, textAlign: "center" }}>Quantity</th>
-                        <th style={{ width: 120, textAlign: "right" }}>Line Total</th>
-                        <th style={{ width: 80 }}></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {lines.map((l) => {
-                        const name = getName(l.id);
-                        const price = getPrice(l.id);
-                        return (
-                          <tr key={l.id}>
-                            <td>{l.id}</td>
-                            <td>{name}</td>
-                            <td style={{ textAlign: "right" }}>
-                              {price ? formatCurrency(price) : "—"}
-                            </td>
-                            <td>
-                              <div className="d-flex justify-content-center gap-2">
-                                <Button
-                                  size="sm"
-                                  variant="outline-secondary"
-                                  onClick={() => dec(l.id)}
-                                >
-                                  −
-                                </Button>
-                                <Form.Control
-                                  value={l.quantity}
-                                  onChange={(e) => {
-                                    const n = Number(e.target.value);
-                                    if (!Number.isFinite(n) || n < 0) return;
-                                    setLines((prev) =>
-                                      prev.map((x) =>
-                                        x.id === l.id ? { ...x, quantity: n } : x
-                                      )
-                                    );
-                                  }}
-                                  style={{ width: 64, textAlign: "center" }}
-                                />
-                                <Button
-                                  size="sm"
-                                  variant="outline-secondary"
-                                  onClick={() => inc(l.id)}
-                                >
-                                  +
-                                </Button>
-                              </div>
-                            </td>
-                            <td style={{ textAlign: "right" }}>
-                              {price ? formatCurrency(price * l.quantity) : "—"}
-                            </td>
-                            <td>
-                              <Button variant="outline-danger" size="sm" onClick={() => remove(l.id)}>
-                                Remove
-                              </Button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                      {lines.length === 0 && (
-                        <tr>
-                          <td colSpan={6} className="text-center text-muted">
-                            No items in this order.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </Table>
+          {/* Right: items (no price columns) */}
+          <Col md={6}>
+            <Card>
+              <Card.Header>Items</Card.Header>
+              <Card.Body>
+                {order.items.length === 0 && <div className="text-muted">No items yet.</div>}
 
-                  <Row className="g-2 align-items-end">
-                    <Col md={6}>
-                      <Form.Label>Add Product</Form.Label>
-                      <Form.Select
-                        value={addProductId}
-                        onChange={(e) => setAddProductId(Number(e.target.value) || "")}
-                      >
-                        <option value="">Select a product…</option>
-                        {/* Active Supabase products first */}
-                        {products.map((p) => (
-                          <option key={`p-${p.id}`} value={p.id}>
-                            #{p.id} — {p.name} ({formatCurrency(p.price)})
-                          </option>
-                        ))}
-                        {/* Legacy fallback items (only those not in products) */}
-                        {Array.from(
-                          new Map(
-                            (legacyItems as any[]).map((it: any) => [it.id, it])
-                          ).values()
-                        )
-                          .filter((it: any) => !byId.get(it.id))
-                          .map((it: any) => (
-                            <option key={`l-${it.id}`} value={it.id}>
-                              #{it.id} — {it.name} (legacy {formatCurrency(it.price)})
-                            </option>
-                          ))}
-                      </Form.Select>
-                    </Col>
-                    <Col md="auto">
-                      <Form.Label>Qty</Form.Label>
-                      <Form.Control
-                        type="number"
-                        min={1}
-                        step={1}
-                        value={addQty}
-                        onChange={(e) => setAddQty(Math.max(1, Number(e.target.value) || 1))}
-                        style={{ width: 100 }}
-                      />
-                    </Col>
-                    <Col md="auto">
-                      <Button onClick={addLine}>Add</Button>
-                    </Col>
-                  </Row>
-                </Card.Body>
-              </Card>
-            </Col>
+                {order.items.map((line) => {
+                  const p = byId.get(line.id);
+                  return (
+                    <div
+                      key={line.id}
+                      className="d-flex align-items-center justify-content-between mb-2"
+                    >
+                      <div className="me-2">
+                        <div className="fw-semibold">{p?.name ?? `Item #${line.id}`}</div>
+                      </div>
+                      <div className="d-flex align-items-center gap-2">
+                        <Button size="sm" variant="outline-secondary" onClick={() => dec(line.id)}>
+                          −
+                        </Button>
+                        <span style={{ minWidth: 24, textAlign: "center" }}>{line.quantity}</span>
+                        <Button size="sm" variant="outline-secondary" onClick={() => inc(line.id)}>
+                          +
+                        </Button>
+                        <Button size="sm" variant="outline-danger" onClick={() => removeLine(line.id)}>
+                          Remove
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
 
-            <Col lg={5}>
-              <Card className="shadow-sm mb-3">
-                <Card.Header>Customer & Staff</Card.Header>
-                <Card.Body>
-                  <Row className="g-3">
-                    <Col md={6}>
-                      <Form.Label>Customer Name</Form.Label>
-                      <Form.Control
-                        value={customerName}
-                        onChange={(e) => setCustomerName(e.target.value)}
-                      />
-                    </Col>
-                    <Col md={6}>
-                      <Form.Label>Staff Name</Form.Label>
-                      <Form.Control
-                        value={staffName}
-                        onChange={(e) => setStaffName(e.target.value)}
-                      />
-                    </Col>
-                    <Col md={6}>
-                      <Form.Label>Email</Form.Label>
-                      <Form.Control
-                        type="email"
-                        value={customerEmail ?? ""}
-                        onChange={(e) => setCustomerEmail(e.target.value)}
-                      />
-                    </Col>
-                    <Col md={6}>
-                      <Form.Label>Phone</Form.Label>
-                      <Form.Control
-                        value={customerPhone}
-                        onChange={(e) => setCustomerPhone(e.target.value)}
-                      />
-                    </Col>
-                    <Col md={6}>
-                      <Form.Label>Deposit Paid</Form.Label>
-                      <InputGroup>
-                        <InputGroup.Text>€</InputGroup.Text>
-                        <Form.Control
-                          type="number"
-                          min={0}
-                          step="0.01"
-                          value={depositPaid}
-                          onChange={(e) => setDepositPaid(e.target.value)}
-                        />
-                      </InputGroup>
-                    </Col>
-                    <Col md={12}>
-                      <Form.Label>Notes</Form.Label>
-                      <Form.Control
-                        as="textarea"
-                        rows={3}
-                        value={notes}
-                        onChange={(e) => setNotes(e.target.value)}
-                        placeholder="Customer-specific instructions…"
-                      />
-                    </Col>
-                  </Row>
-                </Card.Body>
-              </Card>
+                <hr />
 
-              <Card className="shadow-sm">
-                <Card.Header>Totals</Card.Header>
-                <Card.Body>
-                  <div className="d-flex justify-content-between">
-                    <span>Subtotal</span>
-                    <strong>{formatCurrency(subtotal)}</strong>
+                {/* Add-by-search */}
+                <InputGroup>
+                  <Form.Control
+                    placeholder="Search products to add…"
+                    value={productSearch}
+                    onChange={(e) => setProductSearch(e.target.value)}
+                  />
+                  <Button
+                    variant="outline-secondary"
+                    onClick={() => {
+                      // if exact name match, add first result
+                      if (productOptions.length > 0) addProductToOrder(productOptions[0].id);
+                    }}
+                  >
+                    Add first match
+                  </Button>
+                </InputGroup>
+
+                {productSearch && (
+                  <div className="border rounded p-2 mt-2" style={{ maxHeight: 240, overflow: "auto" }}>
+                    {productOptions.length === 0 ? (
+                      <div className="text-muted">No matches.</div>
+                    ) : (
+                      productOptions.map((opt) => (
+                        <Button
+                          key={opt.id}
+                          variant="light"
+                          size="sm"
+                          className="w-100 text-start mb-1"
+                          onClick={() => addProductToOrder(opt.id)}
+                        >
+                          {opt.name}
+                        </Button>
+                      ))
+                    )}
                   </div>
-                  <div className="d-flex justify-content-between">
-                    <span>Deposit</span>
-                    <strong>{formatCurrency(deposit)}</strong>
-                  </div>
-                  <div className="d-flex justify-content-between fs-5 mt-2">
-                    <span>Balance</span>
-                    <strong>{formatCurrency(balance)}</strong>
-                  </div>
-                  <div className="d-flex justify-content-end gap-2 mt-3">
-                    <Button variant="outline-danger" onClick={handleDelete}>
-                      Delete Order
-                    </Button>
-                    <Button variant="primary" onClick={handleSave}>
-                      Save Changes
-                    </Button>
-                  </div>
-                </Card.Body>
-              </Card>
-            </Col>
-          </Row>
-        )}
+                )}
+              </Card.Body>
+              <Card.Footer className="bg-white">
+                <div className="d-flex justify-content-end gap-2">
+                  <Button variant="outline-secondary" onClick={() => navigate(-1)}>
+                    Cancel
+                  </Button>
+                  <Button variant="primary" onClick={handleSave}>
+                    Save changes
+                  </Button>
+                </div>
+              </Card.Footer>
+            </Card>
+          </Col>
+        </Row>
       </Container>
     </>
   );
