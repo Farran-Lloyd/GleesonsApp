@@ -109,7 +109,7 @@ export default function ReceiptPage() {
       <Navbar />
       <Container className="my-4" style={{ maxWidth: 720 }}>
         <div className="d-print-none d-flex justify-content-end gap-2 mb-2">
-          <Button variant="outline-secondary" onClick={() => navigate(-1)}>
+          <Button variant="outline-secondary" onClick={() => navigate(-2)}>
             Back
           </Button>
           <Button variant="primary" onClick={() => window.print()}>

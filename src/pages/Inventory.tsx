@@ -35,10 +35,10 @@ type RequirementRow = {
 export default function Inventory() {
   const location = useLocation();
 
-  // Load products (for names/prices)
+  // Products (for names/prices)
   const { products, byId, loading: loadingProducts, errorMsg: productsError } = useProducts();
 
-  // Orders state
+  // Orders
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -47,7 +47,14 @@ export default function Inventory() {
   const [includeCompleted, setIncludeCompleted] = useState(false);
   const [q, setQ] = useState(""); // search products by name/id
 
-  // Utility: ensure items is an array of {id:number, quantity:number}
+  // NEW: last year's incomplete only
+  const now = new Date();
+  const lastYear = now.getFullYear() - 1;
+  const lastYearStartISO = new Date(lastYear, 0, 1).toISOString();      // YYYY-01-01T00:00:00Z
+  const thisYearStartISO = new Date(lastYear + 1, 0, 1).toISOString();  // (YYYY+1)-01-01T00:00:00Z
+  const [lastYearOnly, setLastYearOnly] = useState(false);
+
+  // Ensure items is an array of {id:number, quantity:number}
   const normalizeItems = (raw: any): { id: number; quantity: number }[] => {
     try {
       const val = typeof raw === "string" ? JSON.parse(raw) : raw;
@@ -67,7 +74,6 @@ export default function Inventory() {
     setLoading(true);
     setErrorMsg(null);
     try {
-      // If you use RLS by user: fetch the user and filter
       const { data: auth } = await supabase.auth.getUser();
       const userId = auth?.user?.id ?? null;
 
@@ -76,8 +82,15 @@ export default function Inventory() {
         .select("id, is_complete, items, created_at, user_id")
         .order("created_at", { ascending: false });
 
-      // Scope to the user if your RLS expects auth.uid() = user_id
       if (userId) query = query.eq("user_id", userId);
+
+      if (lastYearOnly) {
+        // Only last year's incomplete
+        query = query
+          .eq("is_complete", false)
+          .gte("created_at", lastYearStartISO)
+          .lt("created_at", thisYearStartISO);
+      }
 
       const { data, error } = await query;
 
@@ -98,14 +111,15 @@ export default function Inventory() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [lastYearOnly, lastYearStartISO, thisYearStartISO]);
 
-  // Initial load + refetch on route key change (coming back to screen)
+  // Initial load + refetch on route key change
   useEffect(() => {
     fetchOrders();
   }, [fetchOrders, location.key]);
 
-  // Realtime: keep inventory in sync
+  // Realtime: keep inventory in sync (note: does not re-apply server-side filters automatically;
+  // we still handle updates locally and you can click Refresh after changing the lastYearOnly toggle).
   useEffect(() => {
     const channel = supabase
       .channel("orders-inventory-rt")
@@ -161,11 +175,14 @@ export default function Inventory() {
     };
   }, []);
 
-  // Compute required quantities from orders
+  // Compute required quantities (client-side filter for includeCompleted unless lastYearOnly is active)
   const requirements: RequirementRow[] = useMemo(() => {
-    const relevant = includeCompleted ? orders : orders.filter((o) => !o.is_complete);
+    const relevant = lastYearOnly
+      ? orders // server already restricted to incomplete last year
+      : includeCompleted
+      ? orders
+      : orders.filter((o) => !o.is_complete);
 
-    // productId -> qty
     const map = new Map<number, number>();
     for (const o of relevant) {
       for (const line of o.items as { id: number; quantity: number }[]) {
@@ -174,7 +191,6 @@ export default function Inventory() {
       }
     }
 
-    // Build rows
     const rows: RequirementRow[] = [];
     for (const [productId, qty] of map.entries()) {
       const p = byId.get(productId);
@@ -188,18 +204,18 @@ export default function Inventory() {
       });
     }
 
-    // sort: active first, then name
     rows.sort((a, b) => {
       if (a.active !== b.active) return a.active ? -1 : 1;
       return a.name.localeCompare(b.name);
     });
 
     return rows;
-  }, [orders, byId, includeCompleted]);
+  }, [orders, byId, includeCompleted, lastYearOnly]);
 
   // Search filter (by name or id)
+  const [search, setSearch] = useState("");
   const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
+    const needle = search.trim().toLowerCase();
     if (!needle) return requirements;
     return requirements.filter((r) => {
       return (
@@ -207,7 +223,7 @@ export default function Inventory() {
         String(r.productId).includes(needle)
       );
     });
-  }, [q, requirements]);
+  }, [search, requirements]);
 
   const totalLines = filtered.length;
   const grandTotal = filtered.reduce((sum, r) => sum + r.total, 0);
@@ -216,7 +232,6 @@ export default function Inventory() {
   return (
     <>
       <Navbar />
-
       <Container className="my-4">
         <div className="d-flex flex-wrap gap-2 justify-content-between align-items-center mb-3">
           <h2 className="mb-0">Inventory Requirements</h2>
@@ -226,10 +241,22 @@ export default function Inventory() {
               <InputGroup.Text>Search</InputGroup.Text>
               <Form.Control
                 placeholder="Product name or ID…"
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
               />
             </InputGroup>
+
+            <Form.Check
+              type="switch"
+              id="last-year-only"
+              label={`Last year's incomplete only (${lastYear})`}
+              checked={lastYearOnly}
+              onChange={(e) => {
+                setLastYearOnly(e.currentTarget.checked);
+                // when toggling this, re-fetch with server-side date filters
+                setTimeout(fetchOrders, 0);
+              }}
+            />
 
             <Form.Check
               type="switch"
@@ -237,6 +264,8 @@ export default function Inventory() {
               label="Include completed"
               checked={includeCompleted}
               onChange={(e) => setIncludeCompleted(e.currentTarget.checked)}
+              disabled={lastYearOnly} // lastYearOnly already forces incomplete
+              title={lastYearOnly ? "Disabled when filtering last year's incomplete" : ""}
             />
 
             <Button variant="outline-secondary" onClick={fetchOrders}>
@@ -250,16 +279,12 @@ export default function Inventory() {
             <Spinner animation="border" size="sm" /> Loading…
           </div>
         )}
-
         {(errorMsg || productsError) && (
           <Alert variant="danger">{errorMsg || productsError}</Alert>
         )}
-
         {!loading && !loadingProducts && filtered.length === 0 && (
           <Alert variant="info">
-            {includeCompleted
-              ? "No requirements found. There may be no orders."
-              : "No open requirements. Try enabling ‘Include completed’."}
+            No matching requirements found.
           </Alert>
         )}
 
