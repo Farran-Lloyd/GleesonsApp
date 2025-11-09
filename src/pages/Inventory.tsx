@@ -1,3 +1,4 @@
+// src/pages/Inventory.tsx
 import { useEffect, useMemo, useState, useCallback } from "react";
 import {
   Container,
@@ -17,8 +18,8 @@ import { useLocation } from "react-router-dom";
 type OrderRow = {
   id: string;
   is_complete: boolean | null;
-  items: any;
-  created_at: string;
+  items: any;             // jsonb or stringified json
+  created_at: string;     // timestamptz
   user_id?: string | null;
 };
 
@@ -34,34 +35,26 @@ type RequirementRow = {
 export default function Inventory() {
   const location = useLocation();
 
-  const { products, byId, loading: loadingProducts, errorMsg: productsError } = useProducts();
+  // Products (for names/prices)
+  const { byId, loading: loadingProducts, errorMsg: productsError } = useProducts();
 
+  // Orders
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // UI filters
   const [includeCompleted, setIncludeCompleted] = useState(false);
   const [search, setSearch] = useState("");
 
-  // ---- Format timestamps like "2024-01-01 00:00:00+00"
-  const formatPgUtc = (y: number, mZeroBased: number, d: number) => {
-    const dt = new Date(Date.UTC(y, mZeroBased, d, 0, 0, 0));
-    const pad = (n: number) => String(n).padStart(2, "0");
-    const year = dt.getUTCFullYear();
-    const month = pad(dt.getUTCMonth() + 1);
-    const day = pad(dt.getUTCDate());
-    const hh = pad(dt.getUTCHours());
-    const mm = pad(dt.getUTCMinutes());
-    const ss = pad(dt.getUTCSeconds());
-    return `${year}-${month}-${day} ${hh}:${mm}:${ss}+00`;
-  };
-
+  // ---- Last year's window (ISO 8601 for timestamptz)
   const now = new Date();
   const lastYear = now.getUTCFullYear() - 1;
-  const lastYearStartTS = formatPgUtc(lastYear, 0, 1);       // e.g. 2024-01-01 00:00:00+00
-  const thisYearStartTS = formatPgUtc(lastYear + 1, 0, 1);   // e.g. 2025-01-01 00:00:00+00
+  const lastYearStartISO = new Date(Date.UTC(lastYear, 0, 1, 0, 0, 0)).toISOString();       // e.g. 2024-01-01T00:00:00.000Z
+  const thisYearStartISO = new Date(Date.UTC(lastYear + 1, 0, 1, 0, 0, 0)).toISOString();   // e.g. 2025-01-01T00:00:00.000Z
   const [lastYearOnly, setLastYearOnly] = useState(false);
 
+  // Ensure items is an array of {id:number, quantity:number}
   const normalizeItems = (raw: any): { id: number; quantity: number }[] => {
     try {
       const val = typeof raw === "string" ? JSON.parse(raw) : raw;
@@ -92,13 +85,15 @@ export default function Inventory() {
       if (userId) query = query.eq("user_id", userId);
 
       if (lastYearOnly) {
+        // timestamptz-safe ISO range
         query = query
           .eq("is_complete", false)
-          .gte("created_at", lastYearStartTS)
-          .lt("created_at", thisYearStartTS);
+          .gte("created_at", lastYearStartISO)
+          .lt("created_at", thisYearStartISO);
       }
 
       const { data, error } = await query;
+
       if (error) {
         console.error("Supabase select error:", error);
         setErrorMsg("Failed to load orders.");
@@ -107,7 +102,7 @@ export default function Inventory() {
           ...r,
           items: normalizeItems((r as any).items),
           is_complete: !!r.is_complete,
-        }));
+        })) as OrderRow[];
         setOrders(rows);
       }
     } catch (err) {
@@ -116,12 +111,14 @@ export default function Inventory() {
     } finally {
       setLoading(false);
     }
-  }, [lastYearOnly, lastYearStartTS, thisYearStartTS]);
+  }, [lastYearOnly, lastYearStartISO, thisYearStartISO]);
 
+  // Initial load + refetch on route re-enter
   useEffect(() => {
     fetchOrders();
   }, [fetchOrders, location.key]);
 
+  // Realtime sync
   useEffect(() => {
     const channel = supabase
       .channel("orders-inventory-rt")
@@ -177,9 +174,10 @@ export default function Inventory() {
     };
   }, []);
 
+  // Compute requirements (client-side filter for includeCompleted unless lastYearOnly is active)
   const requirements: RequirementRow[] = useMemo(() => {
     const relevant = lastYearOnly
-      ? orders
+      ? orders // already restricted to last year's incomplete on the server
       : includeCompleted
       ? orders
       : orders.filter((o) => !o.is_complete);
@@ -213,6 +211,7 @@ export default function Inventory() {
     return rows;
   }, [orders, byId, includeCompleted, lastYearOnly]);
 
+  // Search filter (by name or id)
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
     if (!needle) return requirements;
@@ -277,9 +276,11 @@ export default function Inventory() {
             <Spinner animation="border" size="sm" /> Loading…
           </div>
         )}
+
         {(errorMsg || productsError) && (
           <Alert variant="danger">{errorMsg || productsError}</Alert>
         )}
+
         {!loading && !loadingProducts && filtered.length === 0 && (
           <Alert variant="info">No matching requirements found.</Alert>
         )}
