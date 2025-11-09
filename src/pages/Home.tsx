@@ -12,6 +12,7 @@ import {
   InputGroup,
   Dropdown,
   ButtonGroup,
+  Accordion,
 } from "react-bootstrap";
 import Navbar from "../components/Navbar";
 import { useProducts } from "../hooks/useProducts";
@@ -22,21 +23,28 @@ import { formatCurrency } from "../utilities/formatCurrency";
 type EditProduct = {
   id: number;
   name: string;
-  price: string; // keep as string for input
+  price: string; // keep as string for inputs
   description: string | null;
   category: string | null;
   active: boolean;
-  archived?: boolean | null;
 };
 
 export default function Home() {
   const { products, loading, errorMsg } = useProducts();
   const { increaseOrderQuantity } = useOrder();
 
-  // UI state
+  // Search
   const [q, setQ] = useState("");
+
+  // Add Item modal
   const [showAdd, setShowAdd] = useState(false);
-  const [newItem, setNewItem] = useState({ name: "", price: "", description: "", category: "" });
+  const [newItem, setNewItem] = useState({
+    name: "",
+    price: "",
+    description: "",
+    categoryChoice: "", // selected existing category or "__custom__"
+    categoryCustom: "", // custom text when categoryChoice === "__custom__"
+  });
 
   // Edit modal
   const [showEdit, setShowEdit] = useState(false);
@@ -46,22 +54,43 @@ export default function Home() {
   const [showDelete, setShowDelete] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
 
-  // Group by category (hide Uncategorized by default? keep visible here)
+  // Unique list of categories from products
+  const categories = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of products) {
+      const cat = (p as any).category?.trim() || "Uncategorized";
+      set.add(cat);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [products]);
+
+  // Group products by category (filtered by search)
   const grouped = useMemo(() => {
     const needle = q.trim().toLowerCase();
     const map = new Map<string, typeof products>();
+
     for (const p of products) {
-      const cat = p.category?.trim() || "Uncategorized";
-      const hits = !needle || p.name.toLowerCase().includes(needle) || cat.toLowerCase().includes(needle);
+      const cat = (p as any).category?.trim() || "Uncategorized";
+      const hits =
+        !needle ||
+        p.name.toLowerCase().includes(needle) ||
+        cat.toLowerCase().includes(needle) ||
+        (p.description ?? "").toLowerCase().includes(needle);
+
       if (!hits) continue;
+
       if (!map.has(cat)) map.set(cat, []);
       map.get(cat)!.push(p);
     }
+
+    // sort products within each category by name
     for (const [, arr] of map) arr.sort((a, b) => a.name.localeCompare(b.name));
+
+    // return sorted categories
     return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   }, [products, q]);
 
-  // Create Product
+  // ----- Create Product -----
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     const price = Number(newItem.price);
@@ -69,25 +98,34 @@ export default function Home() {
       alert("Enter a valid name and non-negative price.");
       return;
     }
+
+    const chosen =
+      newItem.categoryChoice === "__custom__"
+        ? newItem.categoryCustom.trim()
+        : newItem.categoryChoice.trim();
+
+    const category = chosen || null;
+
     const { error } = await supabase.from("products").insert({
       name: newItem.name.trim(),
       price,
       description: newItem.description?.trim() || null,
-      category: newItem.category?.trim() || null,
+      category,
       active: true,
-      archived: false,
     });
+
     if (error) {
       console.error(error);
       alert("Failed to add product.");
       return;
     }
+
     setShowAdd(false);
-    setNewItem({ name: "", price: "", description: "", category: "" });
-    // Realtime will update the list
+    setNewItem({ name: "", price: "", description: "", categoryChoice: "", categoryCustom: "" });
+    // Realtime will refresh the list
   };
 
-  // Open Edit
+  // ----- Edit Product -----
   const openEdit = (p: any) => {
     setEditing({
       id: p.id,
@@ -96,12 +134,10 @@ export default function Home() {
       description: p.description ?? "",
       category: p.category ?? "",
       active: Boolean(p.active),
-      archived: Boolean(p.archived),
     });
     setShowEdit(true);
   };
 
-  // Save Edit
   const handleEditSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editing) return;
@@ -118,7 +154,6 @@ export default function Home() {
         description: editing.description?.trim() || null,
         category: editing.category?.trim() || null,
         active: editing.active,
-        archived: editing.archived ?? false,
       })
       .eq("id", editing.id);
     if (error) {
@@ -130,11 +165,12 @@ export default function Home() {
     setEditing(null);
   };
 
-  // Delete Product
+  // ----- Delete Product -----
   const confirmDelete = (id: number) => {
     setDeletingId(id);
     setShowDelete(true);
   };
+
   const handleDelete = async () => {
     if (!deletingId) return;
     const { error } = await supabase.from("products").delete().eq("id", deletingId);
@@ -146,9 +182,13 @@ export default function Home() {
     setDeletingId(null);
   };
 
+  // For Accordion: open all by default (you can change to specific keys)
+  const defaultOpenKeys = grouped.map(([cat]) => cat);
+
   return (
     <>
       <Navbar />
+
       <Container className="my-4">
         <div className="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
           <h2 className="mb-0">New Order</h2>
@@ -156,10 +196,10 @@ export default function Home() {
             <InputGroup>
               <InputGroup.Text>Search</InputGroup.Text>
               <Form.Control
-                placeholder="Product or category…"
+                placeholder="Product, description, or category…"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
-                style={{ maxWidth: 280 }}
+                style={{ maxWidth: 320 }}
               />
             </InputGroup>
             <Button onClick={() => setShowAdd(true)} variant="primary">
@@ -179,55 +219,61 @@ export default function Home() {
           <Alert variant="info">No products found. Try adding one.</Alert>
         )}
 
-        {!loading &&
-          grouped.map(([cat, arr]) => (
-            <div key={cat} className="mb-4">
-              <h5 className="mb-3">{cat}</h5>
-              <Row xs={1} sm={2} md={3} lg={4} xl={5} className="g-3">
-                {arr.map((p) => (
-                  <Col key={p.id}>
-                    <Card className="h-100">
-                      <Card.Body>
-                        <div className="d-flex justify-content-between align-items-start">
-                          <Card.Title className="me-2">{p.name}</Card.Title>
-                          <Dropdown as={ButtonGroup} align="end">
-                            <Button
-                              size="sm"
-                              variant="success"
-                              onClick={() => increaseOrderQuantity(p.id)}
-                            >
-                              Add
-                            </Button>
-                            <Dropdown.Toggle split size="sm" variant="outline-secondary" />
-                            <Dropdown.Menu>
-                              <Dropdown.Item onClick={() => openEdit(p)}>Edit</Dropdown.Item>
-                              <Dropdown.Item onClick={() => confirmDelete(p.id)} className="text-danger">
-                                Delete…
-                              </Dropdown.Item>
-                            </Dropdown.Menu>
-                          </Dropdown>
-                        </div>
+        {!loading && grouped.length > 0 && (
+          <Accordion defaultActiveKey={defaultOpenKeys}>
+            {grouped.map(([cat, arr]) => (
+              <Accordion.Item eventKey={cat} key={cat}>
+                <Accordion.Header>{cat}</Accordion.Header>
+                <Accordion.Body>
+                  <Row xs={1} sm={2} md={3} lg={4} xl={5} className="g-3">
+                    {arr.map((p) => (
+                      <Col key={p.id}>
+                        <Card className="h-100">
+                          <Card.Body>
+                            <div className="d-flex justify-content-between align-items-start">
+                              <Card.Title className="me-2">{p.name}</Card.Title>
+                              <Dropdown as={ButtonGroup} align="end">
+                                <Button
+                                  size="sm"
+                                  variant="success"
+                                  onClick={() => increaseOrderQuantity(p.id)}
+                                >
+                                  Add
+                                </Button>
+                                <Dropdown.Toggle split size="sm" variant="outline-secondary" />
+                                <Dropdown.Menu>
+                                  <Dropdown.Item onClick={() => openEdit(p)}>Edit</Dropdown.Item>
+                                  <Dropdown.Item
+                                    onClick={() => confirmDelete(p.id)}
+                                    className="text-danger"
+                                  >
+                                    Delete…
+                                  </Dropdown.Item>
+                                </Dropdown.Menu>
+                              </Dropdown>
+                            </div>
 
-                        {p.description && (
-                          <Card.Text className="text-muted" style={{ fontSize: ".9rem" }}>
-                            {p.description}
-                          </Card.Text>
-                        )}
-                      </Card.Body>
-                      <Card.Footer className="bg-white border-0 d-flex justify-content-between">
-                        <small className="text-muted">
-                          {p.category || "—"}
-                          {p.archived ? " • archived" : ""}
-                          {!p.active ? " • inactive" : ""}
-                        </small>
-                        <small className="text-muted">{p.price ? formatCurrency(p.price) : "—"}</small>
-                      </Card.Footer>
-                    </Card>
-                  </Col>
-                ))}
-              </Row>
-            </div>
-          ))}
+                            {p.description && (
+                              <Card.Text className="text-muted" style={{ fontSize: ".9rem" }}>
+                                {p.description}
+                              </Card.Text>
+                            )}
+                          </Card.Body>
+                          <Card.Footer className="bg-white border-0 d-flex justify-content-between">
+                            <small className="text-muted">{(p as any).category || "—"}</small>
+                            <small className="text-muted">
+                              {p.price ? formatCurrency(p.price) : "—"}
+                            </small>
+                          </Card.Footer>
+                        </Card>
+                      </Col>
+                    ))}
+                  </Row>
+                </Accordion.Body>
+              </Accordion.Item>
+            ))}
+          </Accordion>
+        )}
       </Container>
 
       {/* Add Item Modal */}
@@ -246,6 +292,7 @@ export default function Home() {
                 required
               />
             </Form.Group>
+
             <Form.Group className="mb-3">
               <Form.Label>Price</Form.Label>
               <Form.Control
@@ -258,14 +305,33 @@ export default function Home() {
                 required
               />
             </Form.Group>
+
             <Form.Group className="mb-3">
               <Form.Label>Category</Form.Label>
-              <Form.Control
-                value={newItem.category}
-                onChange={(e) => setNewItem((s) => ({ ...s, category: e.target.value }))}
-                placeholder="e.g. Beef"
-              />
+              {/* Dropdown of existing categories + "Create new…" */}
+              <Form.Select
+                value={newItem.categoryChoice}
+                onChange={(e) => setNewItem((s) => ({ ...s, categoryChoice: e.target.value }))}
+              >
+                <option value="">(Choose a category)</option>
+                {categories.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+                <option value="__custom__">Create new…</option>
+              </Form.Select>
+
+              {newItem.categoryChoice === "__custom__" && (
+                <Form.Control
+                  className="mt-2"
+                  placeholder="New category name"
+                  value={newItem.categoryCustom}
+                  onChange={(e) => setNewItem((s) => ({ ...s, categoryCustom: e.target.value }))}
+                />
+              )}
             </Form.Group>
+
             <Form.Group>
               <Form.Label>Description</Form.Label>
               <Form.Control
@@ -303,6 +369,7 @@ export default function Home() {
                 required
               />
             </Form.Group>
+
             <Form.Group className="mb-3">
               <Form.Label>Price</Form.Label>
               <Form.Control
@@ -314,13 +381,16 @@ export default function Home() {
                 required
               />
             </Form.Group>
+
             <Form.Group className="mb-3">
               <Form.Label>Category</Form.Label>
               <Form.Control
                 value={editing?.category ?? ""}
                 onChange={(e) => setEditing((s) => (s ? { ...s, category: e.target.value } : s))}
+                placeholder="e.g. Beef"
               />
             </Form.Group>
+
             <Form.Group className="mb-3">
               <Form.Label>Description</Form.Label>
               <Form.Control
@@ -330,20 +400,13 @@ export default function Home() {
                 onChange={(e) => setEditing((s) => (s ? { ...s, description: e.target.value } : s))}
               />
             </Form.Group>
+
             <Form.Check
               type="switch"
               id="edit-active"
               label="Active"
               checked={!!editing?.active}
               onChange={(e) => setEditing((s) => (s ? { ...s, active: e.currentTarget.checked } : s))}
-              className="mb-2"
-            />
-            <Form.Check
-              type="switch"
-              id="edit-archived"
-              label="Archived (hide from new orders)"
-              checked={!!editing?.archived}
-              onChange={(e) => setEditing((s) => (s ? { ...s, archived: e.currentTarget.checked } : s))}
             />
           </Modal.Body>
           <Modal.Footer>
