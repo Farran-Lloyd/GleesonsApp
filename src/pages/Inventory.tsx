@@ -1,4 +1,3 @@
-// src/pages/Inventory.tsx
 import { useEffect, useMemo, useState, useCallback } from "react";
 import {
   Container,
@@ -18,7 +17,7 @@ import { useLocation } from "react-router-dom";
 type OrderRow = {
   id: string;
   is_complete: boolean | null;
-  items: any;             // jsonb or stringified json
+  items: any;
   created_at: string;
   user_id?: string | null;
 };
@@ -35,26 +34,34 @@ type RequirementRow = {
 export default function Inventory() {
   const location = useLocation();
 
-  // Products (for names/prices)
   const { products, byId, loading: loadingProducts, errorMsg: productsError } = useProducts();
 
-  // Orders
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // UI filters
   const [includeCompleted, setIncludeCompleted] = useState(false);
-  const [q, setQ] = useState(""); // search products by name/id
+  const [search, setSearch] = useState("");
 
-  // NEW: last year's incomplete only
+  // ---- Format timestamps like "2024-01-01 00:00:00+00"
+  const formatPgUtc = (y: number, mZeroBased: number, d: number) => {
+    const dt = new Date(Date.UTC(y, mZeroBased, d, 0, 0, 0));
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const year = dt.getUTCFullYear();
+    const month = pad(dt.getUTCMonth() + 1);
+    const day = pad(dt.getUTCDate());
+    const hh = pad(dt.getUTCHours());
+    const mm = pad(dt.getUTCMinutes());
+    const ss = pad(dt.getUTCSeconds());
+    return `${year}-${month}-${day} ${hh}:${mm}:${ss}+00`;
+  };
+
   const now = new Date();
-  const lastYear = now.getFullYear() - 1;
-  const lastYearStartISO = new Date(lastYear, 0, 1).toISOString();      // YYYY-01-01T00:00:00Z
-  const thisYearStartISO = new Date(lastYear + 1, 0, 1).toISOString();  // (YYYY+1)-01-01T00:00:00Z
+  const lastYear = now.getUTCFullYear() - 1;
+  const lastYearStartTS = formatPgUtc(lastYear, 0, 1);       // e.g. 2024-01-01 00:00:00+00
+  const thisYearStartTS = formatPgUtc(lastYear + 1, 0, 1);   // e.g. 2025-01-01 00:00:00+00
   const [lastYearOnly, setLastYearOnly] = useState(false);
 
-  // Ensure items is an array of {id:number, quantity:number}
   const normalizeItems = (raw: any): { id: number; quantity: number }[] => {
     try {
       const val = typeof raw === "string" ? JSON.parse(raw) : raw;
@@ -85,15 +92,13 @@ export default function Inventory() {
       if (userId) query = query.eq("user_id", userId);
 
       if (lastYearOnly) {
-        // Only last year's incomplete
         query = query
           .eq("is_complete", false)
-          .gte("created_at", lastYearStartISO)
-          .lt("created_at", thisYearStartISO);
+          .gte("created_at", lastYearStartTS)
+          .lt("created_at", thisYearStartTS);
       }
 
       const { data, error } = await query;
-
       if (error) {
         console.error("Supabase select error:", error);
         setErrorMsg("Failed to load orders.");
@@ -102,7 +107,7 @@ export default function Inventory() {
           ...r,
           items: normalizeItems((r as any).items),
           is_complete: !!r.is_complete,
-        })) as OrderRow[];
+        }));
         setOrders(rows);
       }
     } catch (err) {
@@ -111,15 +116,12 @@ export default function Inventory() {
     } finally {
       setLoading(false);
     }
-  }, [lastYearOnly, lastYearStartISO, thisYearStartISO]);
+  }, [lastYearOnly, lastYearStartTS, thisYearStartTS]);
 
-  // Initial load + refetch on route key change
   useEffect(() => {
     fetchOrders();
   }, [fetchOrders, location.key]);
 
-  // Realtime: keep inventory in sync (note: does not re-apply server-side filters automatically;
-  // we still handle updates locally and you can click Refresh after changing the lastYearOnly toggle).
   useEffect(() => {
     const channel = supabase
       .channel("orders-inventory-rt")
@@ -175,10 +177,9 @@ export default function Inventory() {
     };
   }, []);
 
-  // Compute required quantities (client-side filter for includeCompleted unless lastYearOnly is active)
   const requirements: RequirementRow[] = useMemo(() => {
     const relevant = lastYearOnly
-      ? orders // server already restricted to incomplete last year
+      ? orders
       : includeCompleted
       ? orders
       : orders.filter((o) => !o.is_complete);
@@ -212,8 +213,6 @@ export default function Inventory() {
     return rows;
   }, [orders, byId, includeCompleted, lastYearOnly]);
 
-  // Search filter (by name or id)
-  const [search, setSearch] = useState("");
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
     if (!needle) return requirements;
@@ -253,7 +252,6 @@ export default function Inventory() {
               checked={lastYearOnly}
               onChange={(e) => {
                 setLastYearOnly(e.currentTarget.checked);
-                // when toggling this, re-fetch with server-side date filters
                 setTimeout(fetchOrders, 0);
               }}
             />
@@ -264,8 +262,8 @@ export default function Inventory() {
               label="Include completed"
               checked={includeCompleted}
               onChange={(e) => setIncludeCompleted(e.currentTarget.checked)}
-              disabled={lastYearOnly} // lastYearOnly already forces incomplete
-              title={lastYearOnly ? "Disabled when filtering last year's incomplete" : ""}
+              disabled={lastYearOnly}
+              title={lastYearOnly ? "Disabled when viewing last year's incomplete" : ""}
             />
 
             <Button variant="outline-secondary" onClick={fetchOrders}>
@@ -283,9 +281,7 @@ export default function Inventory() {
           <Alert variant="danger">{errorMsg || productsError}</Alert>
         )}
         {!loading && !loadingProducts && filtered.length === 0 && (
-          <Alert variant="info">
-            No matching requirements found.
-          </Alert>
+          <Alert variant="info">No matching requirements found.</Alert>
         )}
 
         {!loading && !loadingProducts && filtered.length > 0 && (
