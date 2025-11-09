@@ -75,9 +75,6 @@ function Navbar() {
             <Nav.Link as={NavLink} to="/" end>
               New Order
             </Nav.Link>
-            <Nav.Link as={NavLink} to="/Edit">
-              Edit
-            </Nav.Link>
             <Nav.Link as={NavLink} to="/history">
               History
             </Nav.Link>
