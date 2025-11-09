@@ -106,9 +106,6 @@ function Navbar() {
             <Nav.Link as={NavLink} to="/" end onClick={handleClose}>
               New Order
             </Nav.Link>
-            <Nav.Link as={NavLink} to="/Edit" onClick={handleClose}>
-              Edit
-            </Nav.Link>
             <Nav.Link as={NavLink} to="/history" onClick={handleClose}>
               History
             </Nav.Link>
