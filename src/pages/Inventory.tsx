@@ -17,9 +17,9 @@ import { useLocation } from "react-router-dom";
 
 type OrderRow = {
   id: string;
+  created_at: string;       // timestamptz
   is_complete: boolean | null;
-  items: any;             // jsonb or stringified json
-  created_at: string;     // timestamptz
+  items: any;               // jsonb or stringified JSON
   user_id?: string | null;
 };
 
@@ -35,83 +35,75 @@ type RequirementRow = {
 export default function Inventory() {
   const location = useLocation();
 
-  // Products (for names/prices)
-  const { byId, loading: loadingProducts, errorMsg: productsError } = useProducts();
+  // Pull products & ID map (from your existing hook)
+  const {
+    products,
+    byId,
+    loading: loadingProducts,
+    errorMsg: productsError,
+  } = useProducts();
 
-  // Orders
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // UI filters
+  // UI state
   const [includeCompleted, setIncludeCompleted] = useState(false);
+  const [lastYearOnly, setLastYearOnly] = useState(false);
   const [search, setSearch] = useState("");
 
-  // ---- Last year's window (ISO 8601 for timestamptz)
+  // Build ISO windows for timestamptz filters (UTC)
   const now = new Date();
   const lastYear = now.getUTCFullYear() - 1;
-  const lastYearStartISO = new Date(Date.UTC(lastYear, 0, 1, 0, 0, 0)).toISOString();       // e.g. 2024-01-01T00:00:00.000Z
-  const thisYearStartISO = new Date(Date.UTC(lastYear + 1, 0, 1, 0, 0, 0)).toISOString();   // e.g. 2025-01-01T00:00:00.000Z
-  const [lastYearOnly, setLastYearOnly] = useState(false);
+  const lastYearStartISO = new Date(Date.UTC(lastYear, 0, 1, 0, 0, 0)).toISOString();
+  const thisYearStartISO = new Date(Date.UTC(lastYear + 1, 0, 1, 0, 0, 0)).toISOString();
 
-  // Replace your normalizeItems with this tolerant version:
-const normalizeItems = (raw: any): { id: number; quantity: number }[] => {
-  if (raw == null) return [];
-
-  // If Supabase sent a JSON string, parse it.
-  let val: any;
-  try {
-    val = typeof raw === "string" ? JSON.parse(raw) : raw;
-  } catch {
-    return [];
-  }
-
-  const out: { id: number; quantity: number }[] = [];
-
-  // Helper to push a single line regardless of field names/types
-  const pushLine = (rec: any) => {
-    if (!rec) return;
-
-    // Accept id | productId | product_id
-    const rid =
-      rec.id ?? rec.productId ?? rec.product_id ?? rec.product_id ?? null;
-
-    // Accept quantity | qty | count | amount
-    const rqty =
-      rec.quantity ?? rec.qty ?? rec.count ?? rec.amount ?? rec.Quantity ?? null;
-
-    // Coerce to numbers (strings -> numbers)
-    const idNum = Number(rid);
-    const qtyNum = Number(rqty);
-
-    if (Number.isFinite(idNum) && Number.isFinite(qtyNum) && qtyNum > 0) {
-      out.push({ id: idNum, quantity: qtyNum });
+  // --- TOLERANT items normalizer -------------------------------------------
+  const normalizeItems = (raw: any): { id: number; quantity: number }[] => {
+    if (raw == null) return [];
+    let val: any = raw;
+    try {
+      if (typeof raw === "string") val = JSON.parse(raw);
+    } catch {
+      return [];
     }
-  };
 
-  // Case A: array of lines
-  if (Array.isArray(val)) {
-    for (const rec of val) pushLine(rec);
-    return out;
-  }
+    const out: { id: number; quantity: number }[] = [];
 
-  // Case B: object map like { "22": 3, "99": 1 } or { "22": { qty: 3 } }
-  if (val && typeof val === "object") {
-    for (const [k, v] of Object.entries(val)) {
-      if (v != null && typeof v === "object") {
-        // e.g. { "22": { qty: "3" } }
-        pushLine({ id: k, ...(v as any) });
-      } else {
-        // e.g. { "22": "3" }
-        pushLine({ id: k, quantity: v });
+    const pushLine = (rec: any) => {
+      if (!rec) return;
+      // accept id | productId | product_id
+      const rid = rec.id ?? rec.productId ?? rec.product_id ?? rec.ProductID ?? null;
+      // accept quantity | qty | count | amount | Quantity
+      const rqty =
+        rec.quantity ?? rec.qty ?? rec.count ?? rec.amount ?? rec.Quantity ?? null;
+      const idNum = Number(rid);
+      const qtyNum = Number(rqty);
+      if (Number.isFinite(idNum) && Number.isFinite(qtyNum) && qtyNum > 0) {
+        out.push({ id: idNum, quantity: qtyNum });
       }
+    };
+
+    if (Array.isArray(val)) {
+      for (const rec of val) pushLine(rec);
+      return out;
     }
+
+    if (val && typeof val === "object") {
+      // handle { "22": 3 } or { "22": { qty: 3 } }
+      for (const [k, v] of Object.entries(val)) {
+        if (v != null && typeof v === "object") {
+          pushLine({ id: k, ...(v as any) });
+        } else {
+          pushLine({ id: k, quantity: v });
+        }
+      }
+      return out;
+    }
+
     return out;
-  }
-
-  return out;
-};
-
+  };
+  // -------------------------------------------------------------------------
 
   const fetchOrders = useCallback(async () => {
     setLoading(true);
@@ -122,13 +114,21 @@ const normalizeItems = (raw: any): { id: number; quantity: number }[] => {
 
       let query = supabase
         .from("orders")
-        .select("id, is_complete, items, created_at, user_id")
+        .select("id, created_at, is_complete, items, user_id")
         .order("created_at", { ascending: false });
 
-      if (userId) query = query.eq("user_id", userId);
+      // RLS-safe: show current user's rows OR historical rows without user_id
+      // (This helps with backfilled orders that have NULL user_id.)
+      if (userId) {
+        // Note: Supabase .or takes a single string with comma-separated clauses
+        query = query.or(`user_id.eq.${userId},user_id.is.null`);
+      } else {
+        // Not logged in: you likely rely on anon-select policy already
+        // (If RLS still blocks rows, relax policy or log in.)
+      }
 
       if (lastYearOnly) {
-        // timestamptz-safe ISO range
+        // Show last-year incomplete only — filter on the server
         query = query
           .eq("is_complete", false)
           .gte("created_at", lastYearStartISO)
@@ -136,15 +136,14 @@ const normalizeItems = (raw: any): { id: number; quantity: number }[] => {
       }
 
       const { data, error } = await query;
-
       if (error) {
         console.error("Supabase select error:", error);
         setErrorMsg("Failed to load orders.");
       } else {
         const rows = (data ?? []).map((r) => ({
           ...r,
-          items: normalizeItems((r as any).items),
           is_complete: !!r.is_complete,
+          items: normalizeItems((r as any).items),
         })) as OrderRow[];
         setOrders(rows);
       }
@@ -156,12 +155,12 @@ const normalizeItems = (raw: any): { id: number; quantity: number }[] => {
     }
   }, [lastYearOnly, lastYearStartISO, thisYearStartISO]);
 
-  // Initial load + refetch on route re-enter
+  // Initial + on navigation
   useEffect(() => {
     fetchOrders();
   }, [fetchOrders, location.key]);
 
-  // Realtime sync
+  // Realtime updates to stay in sync
   useEffect(() => {
     const channel = supabase
       .channel("orders-inventory-rt")
@@ -173,9 +172,9 @@ const normalizeItems = (raw: any): { id: number; quantity: number }[] => {
           setOrders((prev) => [
             {
               id: row.id,
+              created_at: row.created_at,
               is_complete: !!row.is_complete,
               items: normalizeItems(row.items),
-              created_at: row.created_at,
               user_id: row.user_id ?? null,
             },
             ...prev,
@@ -192,9 +191,9 @@ const normalizeItems = (raw: any): { id: number; quantity: number }[] => {
               o.id === row.id
                 ? {
                     id: row.id,
+                    created_at: row.created_at,
                     is_complete: !!row.is_complete,
                     items: normalizeItems(row.items),
-                    created_at: row.created_at,
                     user_id: row.user_id ?? null,
                   }
                 : o
@@ -217,10 +216,10 @@ const normalizeItems = (raw: any): { id: number; quantity: number }[] => {
     };
   }, []);
 
-  // Compute requirements (client-side filter for includeCompleted unless lastYearOnly is active)
+  // Aggregate requirements
   const requirements: RequirementRow[] = useMemo(() => {
     const relevant = lastYearOnly
-      ? orders // already restricted to last year's incomplete on the server
+      ? orders // already filtered server-side
       : includeCompleted
       ? orders
       : orders.filter((o) => !o.is_complete);
@@ -229,7 +228,8 @@ const normalizeItems = (raw: any): { id: number; quantity: number }[] => {
     for (const o of relevant) {
       for (const line of o.items as { id: number; quantity: number }[]) {
         if (!line || !Number.isFinite(line.id) || !Number.isFinite(line.quantity)) continue;
-        map.set(line.id, (map.get(line.id) || 0) + Math.max(0, line.quantity));
+        const qty = Math.max(0, line.quantity);
+        map.set(line.id, (map.get(line.id) || 0) + qty);
       }
     }
 
@@ -254,16 +254,13 @@ const normalizeItems = (raw: any): { id: number; quantity: number }[] => {
     return rows;
   }, [orders, byId, includeCompleted, lastYearOnly]);
 
-  // Search filter (by name or id)
+  // Search (by product name or ID)
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
     if (!needle) return requirements;
-    return requirements.filter((r) => {
-      return (
-        r.name.toLowerCase().includes(needle) ||
-        String(r.productId).includes(needle)
-      );
-    });
+    return requirements.filter(
+      (r) => r.name.toLowerCase().includes(needle) || String(r.productId).includes(needle)
+    );
   }, [search, requirements]);
 
   const totalLines = filtered.length;
@@ -294,6 +291,7 @@ const normalizeItems = (raw: any): { id: number; quantity: number }[] => {
               checked={lastYearOnly}
               onChange={(e) => {
                 setLastYearOnly(e.currentTarget.checked);
+                // Immediately refetch to reflect toggle
                 setTimeout(fetchOrders, 0);
               }}
             />
@@ -325,7 +323,11 @@ const normalizeItems = (raw: any): { id: number; quantity: number }[] => {
         )}
 
         {!loading && !loadingProducts && filtered.length === 0 && (
-          <Alert variant="info">No matching requirements found.</Alert>
+          <Alert variant="info">
+            {lastYearOnly
+              ? "No incomplete orders found for last year."
+              : "No requirements match the current filters."}
+          </Alert>
         )}
 
         {!loading && !loadingProducts && filtered.length > 0 && (
