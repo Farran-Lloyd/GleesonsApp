@@ -106,54 +106,44 @@ export default function Inventory() {
   // -------------------------------------------------------------------------
 
   const fetchOrders = useCallback(async () => {
-    setLoading(true);
-    setErrorMsg(null);
-    try {
-      const { data: auth } = await supabase.auth.getUser();
-      const userId = auth?.user?.id ?? null;
+  setLoading(true);
+  setErrorMsg(null);
+  try {
+    // No per-user filtering here; RLS will decide what’s visible.
+    let query = supabase
+      .from("orders")
+      .select("id, created_at, is_complete, items, user_id")
+      .order("created_at", { ascending: false });
 
-      let query = supabase
-        .from("orders")
-        .select("id, created_at, is_complete, items, user_id")
-        .order("created_at", { ascending: false });
-
-      // RLS-safe: show current user's rows OR historical rows without user_id
-      // (This helps with backfilled orders that have NULL user_id.)
-      if (userId) {
-        // Note: Supabase .or takes a single string with comma-separated clauses
-        query = query.or(`user_id.eq.${userId},user_id.is.null`);
-      } else {
-        // Not logged in: you likely rely on anon-select policy already
-        // (If RLS still blocks rows, relax policy or log in.)
-      }
-
-      if (lastYearOnly) {
-        // Show last-year incomplete only — filter on the server
-        query = query
-          .eq("is_complete", false)
-          .gte("created_at", lastYearStartISO)
-          .lt("created_at", thisYearStartISO);
-      }
-
-      const { data, error } = await query;
-      if (error) {
-        console.error("Supabase select error:", error);
-        setErrorMsg("Failed to load orders.");
-      } else {
-        const rows = (data ?? []).map((r) => ({
-          ...r,
-          is_complete: !!r.is_complete,
-          items: normalizeItems((r as any).items),
-        })) as OrderRow[];
-        setOrders(rows);
-      }
-    } catch (err) {
-      console.error(err);
-      setErrorMsg("Failed to load orders.");
-    } finally {
-      setLoading(false);
+    if (lastYearOnly) {
+      query = query
+        .eq("is_complete", false)
+        .gte("created_at", lastYearStartISO)
+        .lt("created_at", thisYearStartISO);
     }
-  }, [lastYearOnly, lastYearStartISO, thisYearStartISO]);
+
+    const { data, error } = await query;
+    if (error) {
+      console.error("Supabase select error:", error);
+      setErrorMsg("Failed to load orders.");
+    } else {
+      const rows = (data ?? []).map((r: any) => ({
+        id: r.id,
+        created_at: r.created_at,
+        is_complete: !!r.is_complete,
+        user_id: r.user_id ?? null,
+        items: normalizeItems(r.items), // keep your tolerant normalizer
+      }));
+      setOrders(rows);
+    }
+  } catch (err) {
+    console.error(err);
+    setErrorMsg("Failed to load orders.");
+  } finally {
+    setLoading(false);
+  }
+}, [lastYearOnly, lastYearStartISO, thisYearStartISO]);
+
 
   // Initial + on navigation
   useEffect(() => {
