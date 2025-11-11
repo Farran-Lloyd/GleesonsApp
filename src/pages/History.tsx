@@ -215,9 +215,7 @@ export default function OrderHistory() {
                       ) : null}
                     </div>
                     <div className="text-end">
-                      <div>Subtotal: {formatCurrency(o.subtotal ?? 0)}</div>
                       <div>Deposit: {formatCurrency(o.deposit_paid ?? 0)}</div>
-                      <div className="fw-bold">Balance: {formatCurrency(o.balance ?? 0)}</div>
                     </div>
                   </div>
 
